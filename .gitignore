@@ -1,0 +1,78 @@
+# ==============================================================================
+# Gridify Repository Git Ignore Rules
+# ==============================================================================
+
+# Environment files and secrets (CRITICAL: Do not commit sensitive local configs)
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+**/node_modules/
+.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# Next.js and Frontend Build Outputs
+.next/
+**/.next/
+out/
+**/out/
+build/
+**/build/
+dist/
+**/dist/
+
+# TypeScript Build Artifacts
+*.tsbuildinfo
+next-env.d.ts
+
+# Go Binaries and Test Artifacts
+backend/bin/
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+
+# Test Coverage
+coverage/
+**/coverage/
+coverage.out
+
+# Logs and Debug Output
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Operating System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE and Editor Configurations
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+
+# AI Assistant and Local Tooling Caches
+.commandcode/
+.system_generated/

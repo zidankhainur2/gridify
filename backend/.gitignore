@@ -1,0 +1,26 @@
+# Go Build Outputs
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+
+# Coverage
+coverage/
+coverage.out
+
+# Environment and Secrets
+.env
+.env.*
+!.env.example
+
+# Logs and System
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

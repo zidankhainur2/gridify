@@ -1,0 +1,1239 @@
+openapi: 3.1.0
+info:
+  title: Gridify Tournament Engine API
+  version: 1.0.0
+  description: Specification of Gridify Backend REST API and SSE Event Hub.
+servers:
+  - url: http://localhost:8080
+    description: Local Development Server
+
+paths:
+  /healthz:
+    get:
+      summary: Liveness check
+      responses:
+        '200':
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /readyz:
+    get:
+      summary: Readiness check (checks database pool)
+      responses:
+        '200':
+          description: Service and database connection are ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Service is not ready
+
+  /api/v1/auth/register:
+    post:
+      summary: Register a new organizer account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Account created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/auth/login:
+    post:
+      summary: Login with email or username
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful (sets HttpOnly gridify_session cookie)
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+                example: gridify_session=...; HttpOnly; Path=/; SameSite=Lax
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/auth/logout:
+    post:
+      summary: Logout current user and revoke session
+      responses:
+        '200':
+          description: Logout successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /api/v1/auth/forgot-password:
+    post:
+      summary: Request password reset link/token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordRequest'
+      responses:
+        '200':
+          description: Reset token created if account exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /api/v1/auth/reset-password:
+    post:
+      summary: Reset password with token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+      responses:
+        '200':
+          description: Password updated and sessions revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/users/me:
+    get:
+      summary: Get current authenticated user profile
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    patch:
+      summary: Update user profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/users/me/password:
+    post:
+      summary: Change password for authenticated user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/games:
+    get:
+      summary: List all master games
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GameListResponse'
+
+  /api/v1/dashboard/summary:
+    get:
+      summary: Get organizer dashboard summary metrics
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardSummaryResponse'
+
+  /api/v1/tournaments:
+    get:
+      summary: List tournaments owned by current user
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [DRAFT, ONGOING, COMPLETED]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: per_page
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TournamentListResponse'
+    post:
+      summary: Create a new tournament with initial stage(s)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTournamentRequest'
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TournamentDetailResponse'
+
+  /api/v1/tournaments/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      summary: Get tournament detail
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TournamentDetailResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      summary: Update tournament details or settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTournamentRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TournamentDetailResponse'
+    delete:
+      summary: Delete tournament (cascades to stages, participants, matches)
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /api/v1/tournaments/{id}/participants:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      summary: List tournament participants
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParticipantListResponse'
+    post:
+      summary: Add participant to tournament (only when DRAFT)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateParticipantRequest'
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParticipantResponse'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/tournaments/{id}/participants/{pid}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: pid
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    patch:
+      summary: Update participant info or seed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateParticipantRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParticipantResponse'
+    delete:
+      summary: Remove participant (only when DRAFT)
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/tournaments/{id}/stages/{stageId}/generate:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: stageId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      summary: Generate or reset bracket/schedule for stage
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StageViewResponse'
+
+  /api/v1/tournaments/{id}/stages/{stageId}/advance:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: stageId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      summary: Advance qualified teams from Group Stage to Knockout (Hybrid UCL)
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StageViewResponse'
+
+  /api/v1/tournaments/{id}/stages/{stageId}/view:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: stageId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      summary: Get structured stage view (matches, standings, champions)
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StageViewResponse'
+
+  /api/v1/tournaments/{id}/matches/{matchId}/score:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: matchId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    patch:
+      summary: Update head-to-head match score and advance winner/loser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMatchScoreRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MatchResponse'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/tournaments/{id}/matches/{matchId}/br-results:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: matchId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    put:
+      summary: Update Battle Royale match placement and kills
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateBRResultsRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /api/v1/tournaments/{id}/matches/{matchId}/slot:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: matchId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    patch:
+      summary: Admin manually update participant on slot A or B
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMatchSlotRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MatchResponse'
+
+  /api/v1/public/tournaments/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      summary: Public spectator tournament view
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicTournamentResponse'
+
+  /api/v1/public/tournaments/{id}/stream:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      summary: Server-Sent Events stream for tournament live updates
+      responses:
+        '200':
+          description: Event stream (text/event-stream)
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        timestamp:
+          type: string
+          format: date-time
+        database:
+          type: string
+          example: connected
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+
+    ErrorDetail:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          example: TOURNAMENT_LOCKED
+        message:
+          type: string
+          example: Peserta tidak dapat diubah karena turnamen sedang berlangsung.
+        fields:
+          type: object
+          additionalProperties:
+            type: string
+        request_id:
+          type: string
+          example: req_01J9XYZ...
+
+    ErrorResponse:
+      type: object
+      required:
+        - success
+        - error
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          $ref: '#/components/schemas/ErrorDetail'
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        username:
+          type: string
+        first_name:
+          type: string
+        last_name:
+          type: string
+        phone:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    UserResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: '#/components/schemas/User'
+
+    RegisterRequest:
+      type: object
+      required:
+        - email
+        - username
+        - password
+        - first_name
+      properties:
+        email:
+          type: string
+          format: email
+        username:
+          type: string
+          minLength: 3
+          maxLength: 50
+        password:
+          type: string
+          minLength: 8
+        first_name:
+          type: string
+        last_name:
+          type: string
+        phone:
+          type: string
+
+    LoginRequest:
+      type: object
+      required:
+        - identifier
+        - password
+      properties:
+        identifier:
+          type: string
+          description: Email or username
+        password:
+          type: string
+
+    ForgotPasswordRequest:
+      type: object
+      required:
+        - email
+      properties:
+        email:
+          type: string
+          format: email
+
+    ResetPasswordRequest:
+      type: object
+      required:
+        - token
+        - new_password
+      properties:
+        token:
+          type: string
+        new_password:
+          type: string
+          minLength: 8
+
+    UpdateProfileRequest:
+      type: object
+      properties:
+        first_name:
+          type: string
+        last_name:
+          type: string
+        phone:
+          type: string
+        username:
+          type: string
+
+    ChangePasswordRequest:
+      type: object
+      required:
+        - current_password
+        - new_password
+      properties:
+        current_password:
+          type: string
+        new_password:
+          type: string
+          minLength: 8
+
+    Game:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+        name:
+          type: string
+        genre:
+          type: string
+          enum: [MOBA, FPS, SPORTS, BATTLE_ROYALE]
+        platform:
+          type: string
+
+    GameListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Game'
+
+    DashboardSummary:
+      type: object
+      properties:
+        total_tournaments:
+          type: integer
+        active_tournaments:
+          type: integer
+        upcoming_matches_count:
+          type: integer
+        recent_tournaments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tournament'
+
+    DashboardSummaryResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/DashboardSummary'
+
+    Tournament:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        owner_id:
+          type: string
+          format: uuid
+        game_id:
+          type: string
+          format: uuid
+        game:
+          $ref: '#/components/schemas/Game'
+        title:
+          type: string
+        description:
+          type: string
+        format_type:
+          type: string
+          enum: [SINGLE_ELIMINATION, DOUBLE_ELIMINATION, ROUND_ROBIN, HYBRID_UCL, BATTLE_ROYALE]
+        status:
+          type: string
+          enum: [DRAFT, ONGOING, COMPLETED]
+        best_of:
+          type: integer
+          enum: [1, 3, 5, 7]
+        home_away:
+          type: boolean
+        points_per_win:
+          type: integer
+        points_per_draw:
+          type: integer
+        has_third_place:
+          type: boolean
+        br_total_matches:
+          type: integer
+        br_max_teams_per_match:
+          type: integer
+        br_point_system:
+          type: object
+        stages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Stage'
+        participants_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    TournamentListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tournament'
+        meta:
+          type: object
+          properties:
+            page:
+              type: integer
+            per_page:
+              type: integer
+            total:
+              type: integer
+
+    TournamentDetailResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/Tournament'
+
+    CreateTournamentRequest:
+      type: object
+      required:
+        - game_id
+        - title
+        - format_type
+      properties:
+        game_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          minLength: 3
+          maxLength: 160
+        description:
+          type: string
+        format_type:
+          type: string
+          enum: [SINGLE_ELIMINATION, DOUBLE_ELIMINATION, ROUND_ROBIN, HYBRID_UCL, BATTLE_ROYALE]
+        best_of:
+          type: integer
+          default: 1
+        home_away:
+          type: boolean
+          default: false
+        points_per_win:
+          type: integer
+          default: 3
+        points_per_draw:
+          type: integer
+          default: 1
+        has_third_place:
+          type: boolean
+          default: false
+        br_total_matches:
+          type: integer
+          default: 6
+        br_max_teams_per_match:
+          type: integer
+          default: 16
+
+    UpdateTournamentRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [DRAFT, ONGOING, COMPLETED]
+        best_of:
+          type: integer
+        home_away:
+          type: boolean
+        points_per_win:
+          type: integer
+        points_per_draw:
+          type: integer
+        has_third_place:
+          type: boolean
+
+    Stage:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tournament_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        type:
+          type: string
+          enum: [SINGLE_ELIMINATION, DOUBLE_ELIMINATION, ROUND_ROBIN, LEADERBOARD]
+        sequence_order:
+          type: integer
+        status:
+          type: string
+          enum: [PENDING, ONGOING, COMPLETED]
+
+    Participant:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tournament_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        contact_info:
+          type: string
+        seed_number:
+          type: integer
+        group_name:
+          type: string
+        is_verified:
+          type: boolean
+
+    ParticipantResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/Participant'
+
+    ParticipantListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Participant'
+
+    CreateParticipantRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        contact_info:
+          type: string
+        seed_number:
+          type: integer
+
+    UpdateParticipantRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        contact_info:
+          type: string
+        seed_number:
+          type: integer
+        group_name:
+          type: string
+        is_verified:
+          type: boolean
+
+    Match:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tournament_id:
+          type: string
+          format: uuid
+        stage_id:
+          type: string
+          format: uuid
+        bracket_type:
+          type: string
+          enum: [UPPER, LOWER, GRAND_FINAL, THIRD_PLACE, ROUND_ROBIN, BATTLE_ROYALE]
+        round_number:
+          type: integer
+        match_number:
+          type: integer
+        group_label:
+          type: string
+        participant_a_id:
+          type: string
+          format: uuid
+        participant_a:
+          $ref: '#/components/schemas/Participant'
+        participant_b_id:
+          type: string
+          format: uuid
+        participant_b:
+          $ref: '#/components/schemas/Participant'
+        score_a:
+          type: integer
+        score_b:
+          type: integer
+        winner_id:
+          type: string
+          format: uuid
+        is_bye:
+          type: boolean
+        status:
+          type: string
+          enum: [SCHEDULED, ONGOING, COMPLETED]
+        next_match_id:
+          type: string
+          format: uuid
+        next_match_slot:
+          type: string
+          enum: ['A', 'B']
+        loser_next_match_id:
+          type: string
+          format: uuid
+        loser_next_match_slot:
+          type: string
+          enum: ['A', 'B']
+        playing_groups:
+          type: array
+          items:
+            type: string
+        map_name:
+          type: string
+
+    MatchResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/Match'
+
+    UpdateMatchScoreRequest:
+      type: object
+      required:
+        - score_a
+        - score_b
+      properties:
+        score_a:
+          type: integer
+          minimum: 0
+        score_b:
+          type: integer
+          minimum: 0
+        status:
+          type: string
+          enum: [ONGOING, COMPLETED]
+
+    UpdateMatchSlotRequest:
+      type: object
+      required:
+        - slot
+      properties:
+        slot:
+          type: string
+          enum: ['A', 'B']
+        participant_id:
+          type: string
+          format: uuid
+
+    BRResultEntry:
+      type: object
+      required:
+        - participant_id
+        - placement_rank
+      properties:
+        participant_id:
+          type: string
+          format: uuid
+        placement_rank:
+          type: integer
+          minimum: 1
+        kills:
+          type: integer
+          minimum: 0
+
+    UpdateBRResultsRequest:
+      type: object
+      required:
+        - results
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/BRResultEntry'
+
+    LeagueStandingRow:
+      type: object
+      properties:
+        rank:
+          type: integer
+        participant_id:
+          type: string
+          format: uuid
+        participant_name:
+          type: string
+        played:
+          type: integer
+        won:
+          type: integer
+        drawn:
+          type: integer
+        lost:
+          type: integer
+        goals_for:
+          type: integer
+        goals_against:
+          type: integer
+        goal_difference:
+          type: integer
+        points:
+          type: integer
+
+    BRLeaderboardRow:
+      type: object
+      properties:
+        rank:
+          type: integer
+        participant_id:
+          type: string
+          format: uuid
+        participant_name:
+          type: string
+        matches_played:
+          type: integer
+        wins:
+          type: integer
+        placement_points:
+          type: integer
+        kill_points:
+          type: integer
+        total_points:
+          type: integer
+
+    ChampionsPodium:
+      type: object
+      properties:
+        first:
+          $ref: '#/components/schemas/Participant'
+        second:
+          $ref: '#/components/schemas/Participant'
+        third:
+          $ref: '#/components/schemas/Participant'
+
+    StageViewData:
+      type: object
+      properties:
+        stage:
+          $ref: '#/components/schemas/Stage'
+        tournament:
+          $ref: '#/components/schemas/Tournament'
+        matches:
+          type: array
+          items:
+            $ref: '#/components/schemas/Match'
+        standings:
+          type: array
+          items:
+            $ref: '#/components/schemas/LeagueStandingRow'
+        br_leaderboard:
+          type: array
+          items:
+            $ref: '#/components/schemas/BRLeaderboardRow'
+        champions:
+          $ref: '#/components/schemas/ChampionsPodium'
+
+    StageViewResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/StageViewData'
+
+    PublicTournamentResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/StageViewData'
+
+  responses:
+    BadRequest:
+      description: Invalid request payload or validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Authentication required or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Action forbidden (not the tournament owner)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Business logic conflict (e.g. tournament locked, username taken)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
