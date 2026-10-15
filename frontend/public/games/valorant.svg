@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="val-crimson" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF4655"/>
+      <stop offset="100%" stop-color="#BD1E2D"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#0F1923"/>
+  <!-- Left Wing Slash -->
+  <path d="M14 18 L30 18 L22 46 L14 46 Z" fill="url(#val-crimson)"/>
+  <!-- Right Wing Slash -->
+  <path d="M48 18 L34 18 L42 46 L50 46 Z" fill="url(#val-crimson)"/>
+  <!-- Center Negative Angle Notch -->
+  <polygon points="32,28 36,36 28,36" fill="#0F1923"/>
+</svg>

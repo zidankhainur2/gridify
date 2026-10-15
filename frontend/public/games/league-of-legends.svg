@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="lol-gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FDE047"/>
+      <stop offset="50%" stop-color="#CA8A04"/>
+      <stop offset="100%" stop-color="#854D0E"/>
+    </linearGradient>
+    <linearGradient id="lol-blue" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="100%" stop-color="#0369A1"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#0A141D"/>
+  <!-- Circular Rune Crest -->
+  <circle cx="32" cy="32" r="22" stroke="url(#lol-gold)" stroke-width="2" stroke-dasharray="4 2"/>
+  <!-- Hextech Crystal in Center -->
+  <polygon points="32,16 40,32 32,48 24,32" fill="url(#lol-blue)" opacity="0.4"/>
+  <!-- Stylized LoL 'L' Crest -->
+  <path d="M26 14 L34 14 L34 38 L44 38 L44 46 L26 46 Z" fill="url(#lol-gold)"/>
+  <!-- Decorative Accent Wings -->
+  <path d="M18 28 L24 28 L22 34 L16 34 Z" fill="url(#lol-gold)"/>
+  <path d="M46 28 L40 28 L42 34 L48 34 Z" fill="url(#lol-gold)"/>
+</svg>

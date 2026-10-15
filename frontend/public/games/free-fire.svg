@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="ff-flame" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#EA580C"/>
+      <stop offset="50%" stop-color="#F97316"/>
+      <stop offset="100%" stop-color="#FDE047"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#1C100C"/>
+  <!-- Flaming Knife / Blade Symbol -->
+  <path d="M32 10 C36 18, 44 22, 42 32 C40 38, 36 42, 38 48 C34 46, 32 40, 30 40 C28 40, 26 44, 22 42 C20 34, 24 28, 22 22 C26 24, 28 20, 32 10 Z" fill="url(#ff-flame)"/>
+  <!-- Inner Intense Core -->
+  <path d="M32 20 C34 26, 38 28, 36 34 C35 38, 31 40, 32 44 C28 42, 28 36, 26 36 C28 32, 28 26, 32 20 Z" fill="#FEF08A"/>
+  <!-- Base Slash Line -->
+  <path d="M16 48 L48 48" stroke="#F97316" stroke-width="2.5" stroke-linecap="round"/>
+</svg>

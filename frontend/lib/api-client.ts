@@ -10,8 +10,20 @@ import {
   DashboardSummary,
 } from '@/types/api';
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080/api/v1';
+function getApiBaseUrl(): string {
+  const raw = (
+    process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080/api/v1'
+  ).trim();
+  let base = raw.endsWith('/api/v1') ? raw : `${raw.replace(/\/+$/, '')}/api/v1`;
+  if (typeof window !== 'undefined') {
+    if (window.location.hostname === '127.0.0.1' && base.includes('localhost:8080')) {
+      base = base.replace('localhost:8080', '127.0.0.1:8080');
+    } else if (window.location.hostname === 'localhost' && base.includes('127.0.0.1:8080')) {
+      base = base.replace('127.0.0.1:8080', 'localhost:8080');
+    }
+  }
+  return base;
+}
 
 export class ApiClientError extends Error {
   status: number;
@@ -36,7 +48,8 @@ interface FetchOptions extends RequestInit {
 async function request<T>(endpoint: string, options: FetchOptions = {}): Promise<T> {
   const { params, headers = {}, ...rest } = options;
 
-  let url = `${API_BASE_URL}${endpoint}`;
+  const baseUrl = getApiBaseUrl();
+  let url = `${baseUrl}${endpoint}`;
   if (params) {
     const searchParams = new URLSearchParams();
     Object.entries(params).forEach(([key, value]) => {
@@ -236,7 +249,8 @@ export const apiClient = {
       if (params?.search && !queryParams.q) {
         queryParams.q = params.search;
       }
-      return request<Tournament[]>('/tournaments', { params: queryParams });
+      const res = await request<Tournament[]>('/tournaments', { params: queryParams });
+      return Array.isArray(res) ? res : [];
     },
 
     async create(payload: {
@@ -497,7 +511,7 @@ export const apiClient = {
     },
 
     getStreamUrl(tournamentId: string): string {
-      return `${API_BASE_URL}/public/tournaments/${tournamentId}/stream`;
+      return `${getApiBaseUrl()}/public/tournaments/${tournamentId}/stream`;
     },
   },
 };

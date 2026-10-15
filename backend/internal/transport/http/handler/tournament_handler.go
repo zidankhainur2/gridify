@@ -41,6 +41,12 @@ type CreateTournamentPayload struct {
 	BRTotalMatches     int             `json:"br_total_matches"`
 	BRMaxTeamsPerMatch int             `json:"br_max_teams_per_match"`
 	BRPointSystem      json.RawMessage `json:"br_point_system,omitempty"`
+	MatchRules         *struct {
+		BestOf        int  `json:"best_of,omitempty"`
+		HomeAway      bool `json:"home_away,omitempty"`
+		HasThirdPlace bool `json:"has_third_place,omitempty"`
+		TotalMatches  int  `json:"total_matches,omitempty"`
+	} `json:"match_rules,omitempty"`
 }
 
 func (h *TournamentHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -57,6 +63,21 @@ func (h *TournamentHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if err := dec.Decode(&p); err != nil {
 		httputil.RespondError(w, http.StatusBadRequest, "INVALID_PAYLOAD", "Payload JSON tidak valid", nil, reqID)
 		return
+	}
+
+	if p.MatchRules != nil {
+		if p.BestOf == 0 && p.MatchRules.BestOf > 0 {
+			p.BestOf = p.MatchRules.BestOf
+		}
+		if !p.HomeAway && p.MatchRules.HomeAway {
+			p.HomeAway = p.MatchRules.HomeAway
+		}
+		if !p.HasThirdPlace && p.MatchRules.HasThirdPlace {
+			p.HasThirdPlace = p.MatchRules.HasThirdPlace
+		}
+		if p.BRTotalMatches == 0 && p.MatchRules.TotalMatches > 0 {
+			p.BRTotalMatches = p.MatchRules.TotalMatches
+		}
 	}
 
 	gameUUID, err := uuid.Parse(p.GameID)
@@ -114,6 +135,9 @@ func (h *TournamentHandler) List(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httputil.RespondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Gagal mengambil daftar turnamen", nil, reqID)
 		return
+	}
+	if list == nil {
+		list = []domain.Tournament{}
 	}
 
 	meta := map[string]interface{}{

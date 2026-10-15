@@ -1,10 +1,11 @@
 'use client';
 
 import { useMemo } from 'react';
-import { Match, Participant } from '@/types/api';
+import { Match, Participant, BRLeaderboardRow, Tournament, Champions, ChampionResult } from '@/types/api';
 import BRGroupList from './br-group-list';
 import BRLeaderboard from './br-leaderboard';
 import BRMatchInput from './br-match-input';
+import ChampionsView from './champions-view';
 import {
   transformParticipantsToGroups,
   isMultiGroupSystem,
@@ -15,6 +16,9 @@ interface Props {
   matches: Match[];
   participants: Participant[];
   tournamentId: string;
+  brLeaderboard?: BRLeaderboardRow[];
+  champions?: Champions | ChampionResult[];
+  tournament?: Tournament;
   isReadOnly?: boolean;
 }
 
@@ -22,6 +26,9 @@ export default function BattleRoyaleView({
   matches,
   participants,
   tournamentId,
+  brLeaderboard,
+  champions,
+  tournament,
   isReadOnly = false,
 }: Props) {
   const groups = useMemo(
@@ -30,8 +37,22 @@ export default function BattleRoyaleView({
   );
   const showGrouping = isMultiGroupSystem(groups);
 
+  const totalMatches = matches.length;
+  const completedMatches = matches.filter((m) => m.status === 'COMPLETED').length;
+  const isFinished = totalMatches > 0 && totalMatches === completedMatches;
+
   return (
     <div className="space-y-8 animate-in fade-in duration-300">
+      {/* 0. Champions Banner (Jika Seluruh Round Selesai) */}
+      {champions && isFinished && (
+        <ChampionsView
+          tournament={tournament}
+          matches={matches}
+          participants={participants}
+          champions={champions}
+        />
+      )}
+
       {/* 1. Group Distribution (Jika Multi-Group) */}
       {showGrouping && (
         <section>
@@ -45,6 +66,7 @@ export default function BattleRoyaleView({
           matches={matches}
           participants={participants}
           tournamentId={tournamentId}
+          brLeaderboard={brLeaderboard}
           isReadOnly={isReadOnly}
         />
       </section>

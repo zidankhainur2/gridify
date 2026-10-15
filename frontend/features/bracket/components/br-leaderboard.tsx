@@ -1,13 +1,14 @@
 'use client';
 
 import { useMemo } from 'react';
-import { Trophy, Medal, Skull } from 'lucide-react';
-import { Match, Participant, StandingRow } from '@/types/api';
+import { Trophy, Medal, Flame } from 'lucide-react';
+import { Match, Participant, StandingRow, BRLeaderboardRow } from '@/types/api';
 
 interface BRLeaderboardProps {
   matches: Match[];
   participants: Participant[];
-  tournamentId: string;
+  tournamentId?: string;
+  brLeaderboard?: BRLeaderboardRow[];
   standings?: StandingRow[];
   isReadOnly?: boolean;
 }
@@ -26,22 +27,43 @@ const PLACEMENT_POINTS: Record<number, number> = {
 export default function BRLeaderboard({
   matches,
   participants,
+  brLeaderboard,
   standings,
 }: BRLeaderboardProps) {
   const leaderboard = useMemo(() => {
-    // Jika backend Go sudah menyediakan pre-calculated standings
+    // 1. Prioritas Utama: Gunakan brLeaderboard yang dihitung oleh backend Go
+    if (brLeaderboard && brLeaderboard.length > 0) {
+      return brLeaderboard.map((r, idx) => {
+        const teamId = r.participant?.id || r.participant_id || `team-${idx}`;
+        const teamName = r.participant?.name || r.participant_name || 'Tim';
+        return {
+          teamId,
+          teamName,
+          matchesPlayed: r.matches_played,
+          wwcd: r.wins,
+          placementPoints: r.placement_points,
+          killPoints: r.kill_points,
+          totalKills: r.total_kills,
+          totalPoints: r.total_points,
+        };
+      });
+    }
+
+    // 2. Standings fallback jika tersedia
     if (standings && standings.length > 0) {
-      return standings.map((s) => ({
-        teamId: s.participant_id,
-        teamName: s.participant_name,
+      return standings.map((s, idx) => ({
+        teamId: s.participant?.id || s.participant_id || `standing-${idx}`,
+        teamName: s.participant?.name || s.participant_name || 'Tim',
         matchesPlayed: s.played,
         wwcd: s.won,
-        totalKills: s.goals_for,
-        totalPoints: s.points,
+        placementPoints: s.placement_points || 0,
+        killPoints: s.kill_points || 0,
+        totalKills: s.total_kills || s.goals_for,
+        totalPoints: s.total_points || s.points,
       }));
     }
 
-    // Fallback: hitung dari match scores
+    // 3. Fallback kalkulasi lokal dari match scores jika backend belum mengirim leaderboard
     const stats: Record<
       string,
       {
@@ -49,6 +71,8 @@ export default function BRLeaderboard({
         teamName: string;
         matchesPlayed: number;
         wwcd: number;
+        placementPoints: number;
+        killPoints: number;
         totalKills: number;
         totalPoints: number;
       }
@@ -60,28 +84,32 @@ export default function BRLeaderboard({
         teamName: p.name,
         matchesPlayed: 0,
         wwcd: 0,
+        placementPoints: 0,
+        killPoints: 0,
         totalKills: 0,
         totalPoints: 0,
       };
     });
 
     matches.forEach((m) => {
-      if (m.status !== 'COMPLETED' || !m.scores?.results) return;
-      const resList = m.scores.results as any[];
+      if (m.status !== 'COMPLETED') return;
+      const resList = (m.br_results || m.scores?.results || []) as any[];
 
       resList.forEach((r) => {
-        const tId = r.team_id || r.teamId;
+        const tId = r.participant_id || r.team_id || r.teamId;
         const team = stats[tId];
         if (!team) return;
 
-        const rank = typeof r.rank === 'number' ? r.rank : 99;
+        const rank = typeof r.placement_rank === 'number' ? r.placement_rank : typeof r.rank === 'number' ? r.rank : 99;
         const kills = typeof r.kills === 'number' ? r.kills : 0;
+        const pPts = typeof r.placement_points === 'number' ? r.placement_points : (PLACEMENT_POINTS[rank] || 0);
 
         team.matchesPlayed += 1;
         team.totalKills += kills;
+        team.placementPoints += pPts;
+        team.killPoints += kills;
         if (rank === 1) team.wwcd += 1;
 
-        const pPts = PLACEMENT_POINTS[rank] || 0;
         team.totalPoints += pPts + kills;
       });
     });
@@ -90,9 +118,10 @@ export default function BRLeaderboard({
       (a, b) =>
         b.totalPoints - a.totalPoints ||
         b.wwcd - a.wwcd ||
+        b.placementPoints - a.placementPoints ||
         b.totalKills - a.totalKills
     );
-  }, [matches, participants, standings]);
+  }, [matches, participants, brLeaderboard, standings]);
 
   return (
     <div className="rounded-xl bg-surface-raised border border-border-default overflow-hidden shadow-xs">
@@ -104,7 +133,7 @@ export default function BRLeaderboard({
           </h3>
         </div>
         <div className="text-[11px] font-mono text-text-muted">
-          Skor: Penempatan + Jumlah Kill
+          Skor: Penempatan + Jumlah Eliminasi (Kill)
         </div>
       </div>
 
@@ -118,10 +147,13 @@ export default function BRLeaderboard({
               <th className="px-3 py-3 text-center w-16 text-amber-400 font-bold">
                 WWCD
               </th>
+              <th className="px-3 py-3 text-center w-20 text-text-secondary font-medium">
+                Placement
+              </th>
               <th className="px-3 py-3 text-center w-16 text-rose-400 font-bold">
                 Kills
               </th>
-              <th className="px-4 py-3 text-center w-20 font-bold text-text-primary">
+              <th className="px-4 py-3 text-center w-24 font-bold text-text-primary">
                 TOTAL PTS
               </th>
             </tr>
@@ -131,45 +163,51 @@ export default function BRLeaderboard({
               <tr
                 key={row.teamId}
                 className={`hover:bg-surface-elevated/40 transition-colors ${
-                  idx < 3 ? 'bg-amber-500/5' : ''
+                  idx === 0
+                    ? 'bg-amber-500/10'
+                    : idx < 3
+                    ? 'bg-surface-elevated/30'
+                    : ''
                 }`}
               >
                 <td className="px-4 py-3 text-center font-mono font-medium text-text-muted">
                   {idx === 0 ? (
                     <Medal size={15} className="text-amber-400 mx-auto" />
                   ) : idx === 1 ? (
-                    <Medal size={15} className="text-zinc-400 mx-auto" />
+                    <Medal size={15} className="text-slate-400 mx-auto" />
                   ) : idx === 2 ? (
-                    <Medal size={15} className="text-amber-700 mx-auto" />
+                    <Medal size={15} className="text-amber-600 mx-auto" />
                   ) : (
                     idx + 1
                   )}
                 </td>
                 <td className="px-4 py-3 font-semibold text-text-primary">
-                  {row.teamName}
+                  <div className="flex items-center gap-2">
+                    <span>{row.teamName}</span>
+                    {idx === 0 && row.totalPoints > 0 && (
+                      <span className="text-[9px] font-mono bg-amber-500/15 text-amber-400 px-1.5 py-0.5 rounded border border-amber-500/30 font-bold">
+                        LEADER
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td className="px-3 py-3 text-center font-mono text-text-secondary">
                   {row.matchesPlayed}
                 </td>
-                <td className="px-3 py-3 text-center font-mono font-bold text-amber-400">
+                <td className="px-3 py-3 text-center font-mono text-amber-400 font-bold">
                   {row.wwcd}
                 </td>
-                <td className="px-3 py-3 text-center font-mono font-bold text-rose-400">
+                <td className="px-3 py-3 text-center font-mono text-text-secondary">
+                  {row.placementPoints}
+                </td>
+                <td className="px-3 py-3 text-center font-mono text-rose-400 font-bold">
                   {row.totalKills}
                 </td>
-                <td className="px-4 py-3 text-center font-mono font-black text-sm text-accent">
+                <td className="px-4 py-3 text-center font-mono font-bold text-sm text-accent">
                   {row.totalPoints}
                 </td>
               </tr>
             ))}
-
-            {leaderboard.length === 0 && (
-              <tr>
-                <td colSpan={6} className="px-6 py-8 text-center text-text-muted">
-                  Belum ada data pertandingan Battle Royale.
-                </td>
-              </tr>
-            )}
           </tbody>
         </table>
       </div>

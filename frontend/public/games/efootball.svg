@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="efoot-blue" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="100%" stop-color="#1D4ED8"/>
+    </linearGradient>
+    <linearGradient id="efoot-yellow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FDE047"/>
+      <stop offset="100%" stop-color="#EAB308"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#0B132B"/>
+  <!-- Outer Energy Ring -->
+  <circle cx="32" cy="32" r="22" stroke="url(#efoot-blue)" stroke-width="3"/>
+  <!-- Dynamic Orbital Arc -->
+  <path d="M18 36 C18 24, 46 20, 46 32 C46 42, 22 44, 22 34" stroke="url(#efoot-yellow)" stroke-width="4" stroke-linecap="round"/>
+  <!-- Central 'e' Swirl Symbol -->
+  <circle cx="32" cy="32" r="6" fill="url(#efoot-yellow)"/>
+</svg>

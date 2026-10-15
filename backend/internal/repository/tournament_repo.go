@@ -259,7 +259,7 @@ func (r *TournamentRepository) ListTournaments(ctx context.Context, ownerID uuid
 	}
 	defer rows.Close()
 
-	var list []domain.Tournament
+	list := []domain.Tournament{}
 	for rows.Next() {
 		var t domain.Tournament
 		var g domain.Game

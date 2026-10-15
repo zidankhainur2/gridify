@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="cs-orange" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#D97706"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#131B26"/>
+  <!-- Tactical Hex / Shield Outline -->
+  <polygon points="32,10 52,20 52,44 32,54 12,44 12,20" stroke="#F59E0B" stroke-width="2.5" fill="#1A2433"/>
+  <!-- CS Tactical Operator Silhouette -->
+  <!-- Helmet/Head -->
+  <circle cx="32" cy="22" r="5" fill="url(#cs-orange)"/>
+  <!-- Visor -->
+  <path d="M29 22 L35 22" stroke="#131B26" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- Torso & Rifle Pose -->
+  <path d="M25 30 L39 30 L43 45 L21 45 Z" fill="url(#cs-orange)"/>
+  <path d="M37 32 L49 32 L49 35 L42 36 L43 42 L39 42 Z" fill="#FBBF24"/>
+  <!-- Big '2' Submark -->
+  <text x="32" y="52" font-family="sans-serif" font-weight="900" font-size="12" fill="#FFFFFF" text-anchor="middle">II</text>
+</svg>

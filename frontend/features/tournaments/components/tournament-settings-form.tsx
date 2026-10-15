@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Save, Clock, Activity, CheckCircle2, Globe, Shield } from 'lucide-react';
+import { Save, Clock, Activity, CheckCircle2, Globe, Shield, Check } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import { Tournament, TournamentStatus } from '@/types/api';
@@ -14,24 +14,24 @@ const STATUS_OPTIONS: Array<{
   value: TournamentStatus;
   label: string;
   desc: string;
-  icon: any;
+  icon: typeof Clock;
 }> = [
   {
     value: 'DRAFT',
     label: 'Draft',
-    desc: 'Turnamen belum dimulai, peserta masih bisa ditambah/diubah',
+    desc: 'Turnamen belum dimulai, peserta masih bisa ditambah atau diubah.',
     icon: Clock,
   },
   {
     value: 'ONGOING',
     label: 'Sedang Berlangsung',
-    desc: 'Bracket aktif dan skor pertandingan dapat diinput',
+    desc: 'Bracket aktif dan skor pertandingan dapat diinput secara realtime.',
     icon: Activity,
   },
   {
     value: 'COMPLETED',
     label: 'Selesai',
-    desc: 'Kompetisi berakhir dan juara telah ditentukan',
+    desc: 'Kompetisi berakhir dan juara/podium telah ditentukan.',
     icon: CheckCircle2,
   },
 ];
@@ -87,32 +87,44 @@ export default function TournamentSettingsForm({
           </h3>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3" role="radiogroup" aria-label="Status Turnamen">
           {STATUS_OPTIONS.map((opt) => {
             const isSelected = status === opt.value;
+            const IconComp = opt.icon;
+
             return (
-              <div
+              <button
                 key={opt.value}
+                type="button"
+                role="radio"
+                aria-checked={isSelected}
                 onClick={() => setStatus(opt.value)}
-                className={`p-4 rounded-xl border cursor-pointer transition-colors ${
+                className={`p-4 rounded-xl text-left transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
                   isSelected
-                    ? 'bg-accent/10 border-accent'
-                    : 'bg-surface-base border-border-subtle hover:border-border-default'
+                    ? 'border-2 border-accent bg-accent/12 shadow-sm ring-1 ring-accent/30'
+                    : 'border border-border-default bg-surface-base hover:border-border-strong hover:bg-surface-elevated/70'
                 }`}
               >
-                <div className="flex items-center gap-2.5 mb-1.5">
-                  <opt.icon
-                    size={16}
-                    className={isSelected ? 'text-accent' : 'text-text-muted'}
-                  />
-                  <span className="font-semibold text-sm text-text-primary">
-                    {opt.label}
-                  </span>
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <div className="flex items-center gap-2">
+                    <IconComp
+                      size={18}
+                      className={isSelected ? 'text-accent' : 'text-text-muted'}
+                    />
+                    <span className="font-bold text-sm text-text-primary">
+                      {opt.label}
+                    </span>
+                  </div>
+                  {isSelected && (
+                    <div className="w-4 h-4 rounded-full bg-accent text-white flex items-center justify-center shrink-0">
+                      <Check size={10} strokeWidth={3} />
+                    </div>
+                  )}
                 </div>
-                <p className="text-xs text-text-muted leading-relaxed">
+                <p className="text-xs text-text-secondary leading-relaxed">
                   {opt.desc}
                 </p>
-              </div>
+              </button>
             );
           })}
         </div>

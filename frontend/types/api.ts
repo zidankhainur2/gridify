@@ -126,6 +126,7 @@ export interface Match {
   loser_next_match_slot?: 'A' | 'B';
   playing_groups?: string[];
   map_name?: string;
+  br_results?: any[];
 }
 
 export interface StandingRow {
@@ -154,7 +155,9 @@ export interface GroupStanding {
 }
 
 export interface BRLeaderboardRow {
-  participant: Participant;
+  participant?: Participant;
+  participant_id?: string;
+  participant_name?: string;
   matches_played: number;
   wins: number;
   total_kills: number;

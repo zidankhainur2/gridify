@@ -1,1189 +1,1022 @@
-# IMPLEMENTATION PLAN — GRIDIFY MAJOR REVAMP (NEXT.JS + GO + POSTGRESQL)
+# IMPLEMENTATION PLAN — GRIDIFY UI/UX REFINEMENT, DESIGN SYSTEM OVERHAUL & FUNCTIONAL BUG FIXES
 
-**Dokumen Panduan Eksekusi Arsitektur, Keamanan, Database, dan Redesign UI/UX**
-- **Proyek**: Gridify (Esports & Sports Tournament Bracket Generator & Management Platform)
-- **Status Dokumen**: Ready for Execution (Phase 0–4 Audit & Planning Completed)
-- **Target Stack**: Next.js 16 (App Router, TypeScript Strict) + Go 1.24 (Modular Monolith) + PostgreSQL 17 (Greenfield / Clean-Slate Database)
-- **Aturan Fase Saat Ini**: Dokumen perencanaan eksekusi (Zero Code Mutation pada tahap audit)
+- **Nama Proyek**: Gridify — Esports & Sports Competition Bracket Operations Platform
+- **Versi Dokumen**: 2.0 (Post-Revamp Re-Audit & UI/UX Refinement Plan)
+- **Stack Aktual Terverifikasi**: Next.js `16.0.10` (App Router, Turbopack, React `19.2.1`, Tailwind CSS `^4.1.17`) + Go `1.24` (Modular Monolith, Chi Router, `pgx/v5`) + PostgreSQL `17`
+- **Status Fase Saat Ini**: Planning & Audit Completed — **All Implementation Tasks in `TODO` Status** (Zero Source Code Mutation during Audit)
 
 ## 1. Executive Summary
 
-### 1.1 Kondisi Proyek Saat Ini
-Gridify saat ini merupakan aplikasi monolitik berbasis **Next.js 16.0.10 (App Router)** dan **React 19.2.1** yang terikat langsung (*tightly coupled*) ke **Supabase (PostgREST, Supabase Auth, dan Supabase Realtime)** tanpa layanan backend mandiri. Seluruh operasi data dan aturan bisnis dijalankan melalui kombinasi *Next.js Server Components*, *Server Actions* (`features/*/actions/*.ts`), dan pemanggilan langsung *Supabase Browser SDK* dari komponen klien (`app/login/page.tsx`, `app/register/page.tsx`, `hooks/use-tournament-realtime.ts`).
+### 1.1 Konteks Audit Ulang
+Proses migrasi arsitektur besar (*major revamp*) sebelumnya telah berhasil memindahkan fondasi sistem Gridify dari monolit berbasis Supabase menjadi arsitektur **Next.js 16 + Go Modular Monolith + PostgreSQL 17** dengan skema relasional murni (`migrations/000001_init_schema.up.sql`), autentikasi sesi `HttpOnly` berbasis Argon2id, mesin generator bracket transaksional, dan streaming pembaruan langsung via *Server-Sent Events (SSE)*.
 
-Repositori tidak memiliki satupun file migrasi SQL, definisi *constraints*, maupun kebijakan *Row-Level Security (RLS)* yang terdokumentasi di dalam kontrol versi—hanya mengandalkan definisi tipe manual pada `types/database.ts`. Selain itu, konfigurasi `next.config.ts` secara eksplisit mengaktifkan `typescript: { ignoreBuildErrors: true }` yang menyembunyikan berbagai ketidakcocokan tipe data dan bug kompilasi di seluruh codebase.
+Namun, hasil pengujian manual pada antarmuka aplikasi serta audit mendalam baris-demi-baris terhadap seluruh kode sumber aktual (`frontend/` dan `backend/`) membuktikan bahwa **lapisan presentasi (frontend Next.js) mengalami ketidaksinkronan kontrak DTO dengan backend Go, kegagalan konfigurasi token tema Tailwind CSS v4, regresi visualisasi bracket, serta masalah kualitas desain visual**:
 
-### 1.2 Masalah Utama yang Ditemukan
-Berdasarkan hasil audit kode sumber secara menyeluruh terhadap seluruh 52 file proyek, ditemukan lima kelompok masalah struktural yang mengharuskan perombakan menyeluruh (*major revamp*):
+1. **Bug Fungsional & Console Errors Kritis (P0)**:
+   - **React Unique Key Warning & Nama Tim Kosong pada `StandingsTable` (`features/bracket/components/standings-table.tsx:156`)**: Backend Go (`backend/internal/service/standings_service.go:14-25`) mengirimkan objek bersarang `participant: { id, name }`, sedangkan `StandingsTable` membaca properti tingkat atas `row.participant_id` dan `row.participant_name` yang bernilai `undefined`. Akibatnya, setiap baris `<tr>` memiliki `key={undefined}` (memicu *console error* React) dan nama peserta menjadi kosong ketika merender data `standings` dari server.
+   - **Bug Visual Pemilihan Format Kompetisi (`features/tournaments/components/create-tournament-form.tsx:203-235`)**: File `frontend/app/globals.css` menggunakan `@import "tailwindcss";` (Tailwind CSS v4) tetapi **tidak mendefinisikan blok `@theme`** maupun variabel `--color-accent`, `--color-surface-*`, dan `--color-border-*`. Akibatnya, kelas utilitas `bg-accent`, `bg-accent/10`, `border-accent`, dan `text-accent` tidak menghasilkan aturan CSS sama sekali. Saat pengguna memilih format kompetisi, indikator titik radio (`bg-accent`) dan border kartu (`border-accent`) tetap transparan/tidak berubah.
+   - **Kegagalan Submit Pembuatan Turnamen (`create-tournament-form.tsx:96-113` vs `tournament_handler.go:31-60`)**: Form pembuatan turnamen membungkus konfigurasi pertandingan ke dalam objek `match_rules: { best_of, home_away, has_third_place, total_matches }`, sedangkan handler Go menerapkan `dec.DisallowUnknownFields()` pada `CreateTournamentPayload` yang mengharapkan field tingkat atas (`best_of`, `home_away`, `has_third_place`, `br_total_matches`). Setiap upaya membuat turnamen melalui form UI akan ditolak dengan `400 Bad Request` (`INVALID_PAYLOAD`).
+   - **Skor Pertandingan Selalu Tampil `0 - 0` di UI (`match-card.tsx`, `league-match-card.tsx`, `score-modal.tsx`)**: Backend Go mengirimkan skor pada field `score_a` dan `score_b`, namun komponen kartu pertandingan dan modal skor hanya membaca properti warisan lama `match.participant_a_score ?? match.scores?.a ?? 0`.
+   - **Garis Konektor Bracket Hilang & Pengelompokan Babak Rusak (`bracket-visualizer.tsx:32-36 & 154`)**: Elemen `<path>` SVG menggunakan `stroke="var(--color-border-default)"` yang tidak pernah didefinisikan di `globals.css` sehingga garis tidak tergambar sama sekali. Selain itu, pemisahan Upper Bracket, Lower Bracket, dan Grand Final masih memakai filter angka warisan (`round_number < 0` dan `round_number === 999`), padahal backend Go menggunakan `round_number >= 1` positif dengan kolom `bracket_type` (`UPPER`, `LOWER`, `GRAND_FINAL`, `THIRD_PLACE`).
+2. **Kelemahan Identitas Visual & Pola Desain Generik ("AI Slop")**:
+   - Sistem warna saat ini terjebak dalam monokrom hitam-putih-abu (`#09090B`, `#121215`, `#18181B`, dan tombol primer putih pucat `bg-zinc-100 text-zinc-950`) karena seluruh kelas warna semantik (`accent`, `surface-*`, `border-*`) gagal terkompilasi oleh Tailwind v4.
+   - Halaman publik dan aplikasi masih menyisakan pola dekoratif khas *template* AI: badge pengumuman tech stack (`"Arsitektur Baru: Next.js 16 + Go + Realtime SSE"` di `hero.tsx:13-21`), pill kapsul promosi berulang (`"SIAP MEMULAI KOMPETISI"`, `"SPECTATOR LIVE VIEW"`, `"PODIUM JUARA TURNAMEN"`), tautan GitHub generik (`https://github.com`) di footer, serta tautan `"Bagan Publik"` di navbar yang justru melempar pengguna ke `/login`.
+   - Hero section belum menampilkan identitas visual cabang game esports yang didukung secara nyata oleh sistem.
 
-1. **Celah Keamanan & Otorisasi Kritis (Broken Access Control / IDOR)**:
-   Sebagian besar *Server Actions* yang memodifikasi data inti (`generateBracketAction`, `updateMatchDetails`, `updateBRMatchScoreAction`, `updateMatchParticipantAction`, `advanceToKnockoutAction`, `addParticipant`, `updateParticipant`) **tidak memeriksa sesi pengguna (`getUser()`) maupun kepemilikan turnamen (`owner_id`)**. Siapa pun yang mengetahui UUID turnamen atau pertandingan dapat mereset bracket, mengubah skor pertandingan, atau mengganti nama tim secara sepihak. Halaman login (`app/login/page.tsx`) juga melakukan *query* tabel `profiles` langsung dari browser sebelum autentikasi (celah *user/email enumeration*), dan `app/auth/callback/route.ts` rentan terhadap *Open Redirect*.
-2. **Bug Algoritma Turnamen & Kebocoran Business Logic ke Frontend**:
-   - **Double Elimination Rusak pada BYE & Drop-Down**: Generator `features/bracket/generators/double-elimination.ts` menandai match BYE di Round 1 sebagai `COMPLETED`, tetapi tidak memajukan pemenang ke Round 2 dan membiarkan match Lower Bracket Round 1 menggantung tanpa peserta. Selain itu, rumus *drop-to-lower-bracket* di `features/bracket/services/progression-service.ts` (`targetLBRound = -((wbRound * 2) - 1)` dan `targetMatchNum = Math.ceil(match_number / 2)`) salah memetakan *loser* Upper Bracket Round 2+ pada turnamen ≥ 8 tim.
-   - **Hybrid UCL Gagal di Babak Knockout**: `advanceToKnockoutAction` di `features/bracket/actions/stage-actions.ts` hanya membuat match Round 1 untuk format `SINGLE_ELIMINATION` tanpa membuat babak Semifinal/Final dan tanpa menyambungkan `next_match_id`.
-   - **Duplikasi Perhitungan Klasemen di UI**: Perhitungan poin Liga/Round Robin ditulis ulang di tiga tempat berbeda (`stage-actions.ts`, `standings-table.tsx`, dan `standings/page.tsx`), sedangkan perhitungan poin Battle Royale ditulis ulang di `br-leaderboard.tsx` dan `br-score-modal.tsx` dengan konstanta poin statis yang mengabaikan `tournament.settings`.
-   - **Halaman Klasemen Rusak Total**: `app/dashboard/tournaments/[id]/standings/page.tsx` melakukan *query* ke kolom fiktif (`player1_id`, `player2_id`, `player1_score`, `player2_score`) yang tidak sesuai dengan skema tabel `matches` (`participant_a_id`, `participant_b_id`, `scores`).
-3. **Masalah Integritas Database & Ketiadaan Transaksi Atomik**:
-   Penghapusan turnamen (`deleteTournament`), pembuatan turnamen beserta stage (`createTournamentAction`), dan pembuatan bracket (`generateBracketAction`) mengeksekusi banyak *query* HTTP secara berurutan tanpa transaksi database (`BEGIN ... COMMIT`). Jika langkah tengah gagal, data menjadi korup atau bracket lama hilang permanen. Kolom JSONB `matches.scores` juga menyimpan struktur polimorfik (skor 1v1 sekaligus array hasil Battle Royale dan rotasi grup) tanpa *foreign key* atau validasi skema.
-4. **Kualitas Kode & Konfigurasi Dependency**:
-   Penggunaan versi `"latest"` pada `@supabase/ssr`, `@supabase/supabase-js`, `lucide-react`, dan `typescript`; ketidakcocokan `@types/react` (`^18.3.27`) dengan React `19.2.1`; serta dependency `@tanstack/react-query` yang diinisialisasi di `AppProviders` namun tidak pernah dipakai di satu pun komponen.
-5. **Desain Visual "AI Slop" & Masalah Usability**:
-   Antarmuka dipenuhi dekorasi khas *template* AI generatif: *glowing blurred blobs* raksasa (`blur-[100px]` hingga `blur-[128px]`) di hampir setiap halaman, gradasi teks dan tombol neon (`indigo-500` ke `purple-600` ke `pink-600`), penggunaan *glassmorphism* (`bg-white/5 backdrop-blur-xl`) berlapis di atas latar gelap yang menurunkan kontras, pencampuran warna heksadesimal statis (`#1a1b26`, `#0f1016`) dengan palet `slate-950`, bug konfigurasi font di `app/globals.css` (menimpa `Inter` dengan `Arial, Helvetica, sans-serif`), penggunaan `window.confirm()` bawaan browser, serta garis konektor bracket berbasis CSS `div` absolut yang pecah saat jumlah peserta besar.
+### 1.2 Tujuan Dokumen Ini
+Dokumen `IMPLEMENTATION_PLAN.md` ini menggantikan rencana sebelumnya secara menyeluruh dan berfungsi sebagai cetak biru teknis tunggal (*single source of truth*) untuk menuntaskan perbaikan bug fungsional, membangun sistem desain baru yang berkarakter (**"Tactical Broadcast Slate & Crimson Volt"**), menghapus pola *AI-slop*, membangun mesin konektor bracket SVG yang akurat, serta merombak Hero, Navbar, Footer, dan konsistensi halaman secara terukur.
 
-### 1.3 Visi Arsitektur dan Produk Setelah Revamp
-Revamp ini mentransformasikan Gridify menjadi platform manajemen turnamen kelas produksi dengan pemisahan tanggung jawab yang tegas:
-- **Backend Go (Golang) sebagai Single Source of Truth**: Modular monolith berbahasa Go yang menangani autentikasi sesi berbasis HttpOnly cookie (Argon2id), otorisasi kepemilikan turnamen, seluruh generator bracket (Single/Double Elimination, Round Robin, Hybrid UCL, Battle Royale), mesin progresi pertandingan yang deterministik, kalkulasi klasemen, dan kanal *Server-Sent Events (SSE)* untuk pembaruan *realtime*.
-- **Database PostgreSQL 17 Baru yang Murni (Greenfield Relational Schema)**: Membangun database PostgreSQL baru dari nol tanpa membawa beban kompatibilitas atau backup dari Supabase lama. Skema dirancang murni berdasarkan kebutuhan domain dan temuan audit: menggunakan migrasi terversi (`golang-migrate`), *foreign key constraints* (`ON DELETE CASCADE`), *check constraints* ketat di level tabel, pemisahan tabel hasil Battle Royale dari skor match head-to-head, dan eksekusi mutasi di dalam transaksi ACID.
-- **Next.js sebagai Presentation Layer Modern & Bebas "AI Slop"**: Antarmuka pengguna yang mengadopsi estetika *Esports Operations System* yang bersih, tajam, kontras tinggi, tipografi presisi (`Geist Sans` & `Geist Mono`), visualisasi bracket berbasis SVG dinamis yang presisi di semua ukuran turnamen, serta pengalaman pengguna yang konsisten dalam Bahasa Indonesia.
+## 2. Current State & Previous Revamp Assessment
 
-## 2. Current State Audit
+### 2.1 Apa yang Sudah Berhasil pada Revamp Sebelumnya (Pertahankan)
+Berdasarkan pemeriksaan kode aktual di `backend/` dan `migrations/`, fondasi backend dan database berada dalam kondisi sangat baik dan **tidak memerlukan perombakan arsitektur**:
+- **Database PostgreSQL 17 Murni (`migrations/000001_init_schema.up.sql` & `000002_seed_games.up.sql`)**: Sudah ternormalisasi penuh dengan 7 tabel (`users`, `user_sessions`, `password_reset_tokens`, `games`, `tournaments`, `stages`, `participants`, `matches`, `battle_royale_match_results`), dilengkapi `FOREIGN KEY ON DELETE CASCADE`, `CHECK` constraints ketat, dan seed 10 game resmi di 4 genre (`MOBA`, `FPS`, `SPORTS`, `BATTLE_ROYALE`).
+- **Mesin Algoritma & Layanan Domain Go (`backend/internal/service/**`)**:
+  - Generator `single_elim.go`, `double_elim.go`, `round_robin.go`, `battle_royale.go`, dan mesin `progression.go` sudah berjalan di dalam transaksi database (`database.WithTx`), mengisi `next_match_id`, `next_match_slot`, `loser_next_match_id`, dan `loser_next_match_slot` secara eksplisit, serta memiliki unit test dan integration test yang komprehensif (`*_test.go`).
+  - Layanan `standings_service.go` sudah menghitung klasemen Liga/Grup, Leaderboard Battle Royale, dan `Champions` secara terpusat di backend.
+  - Kanal *realtime* `internal/realtime/hub.go` sudah memancarkan event SSE (`match_updated`, `stage_updated`, `tournament_updated`, `participant_updated`) dengan *heartbeat* 25 detik.
 
-### 2.1 Architecture & Tech Stack Audit
+### 2.2 Mengapa Masalah Muncul pada Implementasi Frontend Saat Ini
+Evaluasi terhadap `frontend/` mengungkapkan tiga akar penyebab mengapa hasil implementasi sebelumnya belum memenuhi standar produksi:
+1. **Migrasi Setengah Jalan pada Kontrak Data Frontend (`types/api.ts` & Komponen UI)**:
+   Saat backend Go selesai dibuat dengan struktur JSON baru (`score_a`/`score_b`, `game`, `playing_groups`, `br_leaderboard`, serta objek bersarang `participant` di dalam `StandingRow`), beberapa komponen di `frontend/features/` hanya diperbarui agar lulus kompilasi TypeScript dengan menambahkan properti opsional (`participant_id?: string`, `participant_a_score?: number`, `games?: Game`) di `types/api.ts`, tanpa mengubah kode komponen untuk membaca field aktual yang dikirim oleh Go!
+2. **Ketidaksesuaian Konfigurasi Tailwind CSS v4 di `frontend/app/globals.css`**:
+   Seluruh komponen halaman ditulis menggunakan nama token semantik (`bg-surface-base`, `bg-surface-raised`, `bg-surface-elevated`, `border-border-default`, `border-border-subtle`, `text-text-primary`, `text-text-secondary`, `text-text-muted`, `bg-accent`, `text-accent`, `border-accent`, `bg-danger`, `text-danger`), namun `app/globals.css` hanya mendefinisikan 6 variabel CSS biasa di `:root` (`--background`, `--foreground`, `--surface-raised`, `--surface-overlay`, `--surface-border`, `--surface-muted`) tanpa blok `@theme` Tailwind v4. Akibatnya, **seluruh kelas utilitas semantik tersebut diabaikan oleh compiler Tailwind v4**, meninggalkan tampilan monokrom gelap yang datar dan menghilangkan indikator interaksi (`isSelected`, `focus`, `hover`).
+3. **Ketiadaan Art Direction & Kurasi Konten Produk**:
+   Komponen publik (`hero.tsx`, `navbar.tsx`, `footer.tsx`, `features.tsx`, `how-it-works.tsx`) dibangun menggunakan susunan template landing page standar (badge tech stack di atas judul, grid kartu `rounded-xl` seragam dengan ikon di dalam kotak, dan link footer placeholder ke `https://github.com`) tanpa menonjolkan konten domain utama Gridify, yaitu cabang game kompetitif dan kejelasan visual bagan turnamen.
 
-#### A. Pemetaan Tech Stack & Dependency Saat Ini
-Berdasarkan `package.json`, `tsconfig.json`, `next.config.ts`, dan `postcss.config.mjs`:
-- **Framework**: Next.js `16.0.10` (App Router, menggunakan konvensi `proxy.ts` baru di Next.js 16 sebagai pengganti `middleware.ts`).
-- **UI Runtime**: React `19.2.1` dan `react-dom` `19.2.1`, namun `devDependencies` masih menggunakan `@types/react: "^18.3.27"` dan `@types/react-dom: "^18.3.7"`.
-- **Styling**: Tailwind CSS `^4.1.17` via `@tailwindcss/postcss`, tetapi `devDependencies` masih menyertakan `autoprefixer: "latest"` yang tidak lagi diperlukan di Tailwind v4.
-- **Data & Auth SDK**: `@supabase/supabase-js: "latest"` dan `@supabase/ssr: "latest"`. Penggunaan tag `"latest"` sangat berbahaya karena pembaruan *breaking changes* dari registry npm dapat memutus build sewaktu-waktu.
-- **State & UI Libraries**:
-  - `@tanstack/react-query` (`^5.90.11`) dan `@tanstack/react-query-devtools` (`^5.91.1`): Terpasang di `components/providers/app-providers.tsx`, namun **tidak ada satu pun pemanggilan `useQuery` atau `useMutation`** di seluruh aplikasi. Ini adalah *dead weight* di bundle klien.
-  - `@headlessui/react` (`^2.2.9`): Hanya dipakai di `features/bracket/components/score-modal.tsx` (`Dialog`, `Transition`), sementara modal lain seperti `br-score-modal.tsx` dan popover `share-button.tsx` dibuat manual dengan `fixed inset-0` tanpa manajemen fokus (*focus trap*) atau aksesibilitas `Escape` key.
-  - `framer-motion` (`^12.23.26`): Hanya dipakai untuk animasi masuk sederhana di komponen *landing page* (`navbar.tsx`, `hero.tsx`, `features.tsx`, `how-it-works.tsx`), sementara halaman aplikasi menggunakan class animasi CSS (`animate-in fade-in`).
-  - `zod` (`^4.1.13`): Hanya digunakan di satu file (`features/tournaments/actions/tournament-actions.ts`), sedangkan form dan *Server Actions* lainnya melakukan validasi string manual yang minim.
+## 3. Validated Audit Findings
 
-#### B. Struktur Direktori & Pola Komunikasi Saat Ini
-Proyek saat ini menggabungkan routing halaman (`app/`) dan modul fitur (`features/auth`, `features/tournaments`, `features/participants`, `features/bracket`). Namun, batas arsitektur antar-modul mengalami kebocoran parah:
-- **Komponen UI Memanggil Supabase Secara Langsung**: `app/login/page.tsx`, `app/register/page.tsx`, `app/forgot-password/page.tsx`, `app/update-password/page.tsx`, `features/auth/components/security-form.tsx`, dan `app/dashboard/layout.tsx` menginisialisasi `createBrowserClient` dan mengeksekusi operasi autentikasi maupun query tabel secara langsung dari browser.
-- **Server Components Menjalankan Query Database Tanpa Service Layer**: Setiap file `page.tsx` dan `layout.tsx` di bawah `app/dashboard/` dan `app/(public)/t/[id]/` menulis query `.from(...).select(...)` mentah sendiri-sendiri dengan struktur *join* yang berbeda-beda.
-- **Penonaktifan Type Checking pada Build**: Di `next.config.ts`, opsi `typescript: { ignoreBuildErrors: true }` diaktifkan untuk memaksa build berhasil meskipun terdapat *type errors* nyata di beberapa komponen dan halaman.
+Sesuai instruksi audit, seluruh temuan telah divalidasi langsung terhadap kode sumber aktual dan diklasifikasikan ke dalam tiga kategori: **Confirmed Issues**, **Potential Issues**, dan **Design Improvements**.
 
-#### C. Evaluasi Komponen: Pertahankan, Refactor, atau Tulis Ulang
-| Area / Modul Saat Ini | Lokasi File | Keputusan | Alasan Teknis |
+### 3.1 Confirmed Issues (Terverifikasi 100% dari Source Code)
+
+| ID Temuan | Komponen / Lokasi File | Kategori | Bukti Kode & Akar Masalah Aktual |
 | :--- | :--- | :--- | :--- |
-| **Algoritma Matematika Seeding & Rotasi** | `features/bracket/utils/bracket-math.ts` | **Port ke Go & Perbaiki** | Logika `getStandardSeedingOrder`, `distributeParticipants`, dan `distributeTeamsToGroups` memiliki dasar yang baik, namun wajib dipindahkan ke domain service Go dan dilengkapi unit test deterministik. |
-| **Generator Bracket & Progresi** | `features/bracket/generators/*.ts`, `features/bracket/services/progression-service.ts` | **Tulis Ulang di Go** | Mengandung bug fatal pada Double Elimination, BYE handling, dan Hybrid UCL, serta melakukan operasi database N+1 tanpa transaksi. |
-| **Server Actions (`features/*/actions/*.ts`)** | `features/auth/actions/*`, `features/bracket/actions/*`, `features/participants/actions/*`, `features/tournaments/actions/*` | **Ganti dengan Go REST API + Next.js API Client** | Seluruh *business logic* dan mutasi database harus dipusatkan di backend Go. Next.js hanya boleh menggunakan API client terstandarisasi atau server actions tipis sebagai *proxy* ke Go. |
-| **Realtime Listener (`hooks/use-tournament-realtime.ts`)** | `hooks/use-tournament-realtime.ts`, `components/providers/tournament/realtime-listener.tsx` | **Refactor ke SSE Client** | Saat ini bergantung pada `supabase.channel('postgres_changes')`. Harus diganti dengan *Server-Sent Events (SSE)* (`EventSource`) yang terhubung ke endpoint streaming Go. |
-| **Komponen UI & Halaman (`app/**`, `components/**`, `features/*/components/**`)** | Seluruh file `.tsx` | **Refactor & Redesign di Next.js** | Struktur halaman App Router dapat dipertahankan, tetapi implementasi visual, design tokens, komponen bracket, dan kalkulasi klasemen di klien harus dirombak. |
+| **CFM-01** | `frontend/features/bracket/components/standings-table.tsx:29-42, 155-182`<br>`backend/internal/service/standings_service.go:14-25` | Functional Bug / Console Error | **React Unique Key Warning & Blank Participant Name**: Struct Go `StandingRow` mengekspor `participant: domain.Participant` (`json:"participant"`), tanpa field `participant_id` atau `participant_name`. Di `standings-table.tsx:30-42`, saat `standings` dari backend di-flatten, `r.participant_id` dan `r.participant_name` bernilai `undefined`. Baris 157 (`<tr key={row.participant_id}>`) memberikan `key={undefined}` pada setiap baris, memicu warning React `Each child in a list should have a unique "key" prop`, dan baris 177 (`{row.participant_name}`) merender teks kosong. Selain itu, baris 159 & 178 memeriksa `grpName.includes('Group')`, padahal backend Go (`round_robin.go:45`) memberi nama `"Grup A"`, `"Grup B"`, sehingga highlight & badge `Q` (Qualified) tidak pernah tampil pada mode `HYBRID_UCL`. |
+| **CFM-02** | `frontend/app/globals.css:1-10`<br>`frontend/features/tournaments/components/create-tournament-form.tsx:203-235, 269-281, 335-347`<br>`frontend/features/tournaments/components/tournament-settings-form.tsx:91-117` | Functional & Visual Bug | **Competition Format, Best-Of, BR Rounds & Status Selection Invisible**: `globals.css` menggunakan `@import "tailwindcss";` (Tailwind v4) tanpa deklarasi `@theme`. Kelas `bg-accent/10`, `border-accent`, `bg-accent`, `text-accent`, `bg-surface-base`, `bg-surface-raised`, `bg-surface-elevated`, `border-border-default`, dan `border-border-subtle` tidak menghasilkan aturan CSS. Akibatnya, saat pengguna mengklik format kompetisi di `create-tournament-form.tsx:208`, state `selectedFormat` berubah di React, tetapi border kartu dan titik radio (`<div className="w-2 h-2 rounded-full bg-accent" />`) tetap transparan dan tidak terlihat sama sekali. Masalah identik terjadi pada tombol pilihan `Best Of`, putaran `Battle Royale`, dan kartu `Status Turnamen` di halaman Settings. |
+| **CFM-03** | `frontend/features/tournaments/components/create-tournament-form.tsx:96-113`<br>`backend/internal/transport/http/handler/tournament_handler.go:31-60` | Critical Functional Bug | **Create Tournament Form Selalu Gagal Submit (`400 Bad Request`)**: `CreateTournamentForm` mengirim payload `{ title, game_id, format_type, description, match_rules: { best_of, home_away, has_third_place, total_matches } }`. Di backend Go, `TournamentHandler.Create` menggunakan `dec.DisallowUnknownFields()` pada `CreateTournamentPayload` yang tidak memiliki field `match_rules` (melainkan field root `best_of`, `home_away`, `has_third_place`, `br_total_matches`). Akibatnya, pembuatan turnamen dari UI selalu gagal dengan `400 INVALID_PAYLOAD`. |
+| **CFM-04** | `frontend/features/bracket/components/bracket-visualizer.tsx:32-36, 58-95, 145-161` | Functional & Visual Bug | **Garis Konektor Bracket Tidak Tampil & Layout Double Elimination / Bronze Match Rusak**:<br>1. Baris 154: `<path stroke="var(--color-border-default)" />` merujuk ke variabel CSS `--color-border-default` yang tidak ada di `globals.css`, sehingga garis SVG tidak tergambar.<br>2. Baris 32–36: Memfilter `upperMatches` dengan `m.round_number > 0 && m.round_number < 999`, `lowerMatches` dengan `m.round_number < 0`, dan `grandFinalMatches` dengan `m.round_number === 999`. Padahal di backend Go (`single_elim.go`, `double_elim.go`), semua match memiliki `round_number >= 1` dan dibedakan melalui `m.bracket_type` (`UPPER`, `LOWER`, `GRAND_FINAL`, `THIRD_PLACE`). Akibatnya, pada Double Elimination, seluruh match Lower Bracket dan Grand Final tergabung ke kolom Upper Bracket Round 1..N, sedangkan seksi Lower Bracket & Grand Final selalu kosong! Pada Single Elimination dengan Bronze Match, match `THIRD_PLACE` menumpuk di kolom Final.<br>3. Baris 76–85: Titik masuk konektor (`y2`) selalu mengarah ke titik tengah vertikal kartu target (`tRect.top + tRect.height / 2`), bukan ke baris slot peserta A (atas) atau peserta B (bawah) sesuai `m.next_match_slot`, sehingga dua garis dari match berbeda menyatu di tengah sebelum menyentuh kartu dan tidak merepresentasikan slot masuk peserta secara akurat. |
+| **CFM-05** | `frontend/features/bracket/components/match-card.tsx:23-24`<br>`frontend/features/bracket/components/league-match-card.tsx:23-24`<br>`frontend/features/bracket/components/score-modal.tsx:28-33`<br>`backend/internal/domain/tournament.go:77-78` | Critical Functional Bug | **Skor Pertandingan Tidak Pernah Tampil (`0 - 0`)**: Backend Go mengirimkan skor pada properti `score_a` dan `score_b`. Namun `MatchCard`, `LeagueMatchCard`, dan nilai awal input `ScoreModal` hanya membaca `match.participant_a_score ?? match.scores?.a ?? 0` tanpa membaca `match.score_a` dan `match.score_b`. Akibatnya, skor yang sudah tersimpan di database tetap tampil `0 - 0` di seluruh kartu pertandingan dan modal skor! |
+| **CFM-06** | `frontend/app/dashboard/tournaments/[id]/bracket/page.tsx:48-51, 157-164`<br>`frontend/app/(public)/t/[id]/page.tsx:52-55, 235-242`<br>`frontend/features/bracket/components/br-view.tsx:21-51`<br>`frontend/features/bracket/components/br-leaderboard.tsx:31-95, 130-135`<br>`frontend/features/bracket/components/br-match-input.tsx:25, 44`<br>`frontend/features/bracket/components/br-score-modal.tsx:48, 138` | Functional Bug / Console Error | **Mode Battle Royale Rusak di Frontend**:<br>1. `bracket/page.tsx` dan `t/[id]/page.tsx` tidak meneruskan `stageViewData.br_leaderboard` maupun `stageViewData.champions` ke `<BattleRoyaleView />`.<br>2. `BRLeaderboard` membaca `s.participant_id` dan `s.participant_name` (yang bernilai `undefined` pada `BRLeaderboardRow` dari Go, berpotensi memicu React unique key warning pada `<tr key={row.teamId}>` di baris 132) atau jatuh ke fallback `m.scores?.results` yang tidak ada di Go, sehingga tabel leaderboard selalu menampilkan `0` poin untuk semua tim.<br>3. Di `battle_royale.go:53-54`, setiap game disimpan dengan `round_number = 1..N` dan `match_number = 1`. Namun `BRMatchInput` (baris 44) dan `BRScoreModal` (baris 138) menampilkan `Game #{match.match_number}`, sehingga seluruh putaran selalu bernama **`Game #1`**! Selain itu, `BRMatchInput` membaca `match.scores?.groups` alih-alih `match.playing_groups`. |
+| **CFM-07** | `frontend/app/dashboard/page.tsx:176`<br>`frontend/app/dashboard/tournaments/page.tsx:176`<br>`frontend/app/dashboard/tournaments/[id]/layout.tsx:38`<br>`frontend/app/dashboard/tournaments/[id]/page.tsx:83`<br>`frontend/app/(public)/t/[id]/page.tsx:130` | Functional Bug | **Nama Game Selalu Jatuh ke Fallback `'Esports'`**: Backend Go (`domain/tournament.go:23`) mengekspor relasi game dengan key JSON tunggal `"game": { "id", "slug", "name", "genre", "platform" }`. Seluruh halaman frontend hanya membaca properti jamak `tournament.games?.name` tanpa memeriksa `tournament.game?.name`, sehingga nama game asli tidak pernah muncul di kartu maupun header turnamen. |
+| **CFM-08** | `frontend/components/landing/hero.tsx:13-21`<br>`frontend/app/page.tsx:31-34`<br>`frontend/app/(public)/t/[id]/page.tsx:110-113`<br>`frontend/features/bracket/components/champions-view.tsx:75-78`<br>`frontend/components/providers/tournament/realtime-listener.tsx:14-38` | UI/UX & AI-Slop Pattern | **Elemen Dekoratif AI-Slop & Badge Promosi Internal**:<br>1. `hero.tsx:13-21` menampilkan badge `"Arsitektur Baru: Next.js 16 + Go + Realtime SSE"` yang mengekspos stack teknis internal kepada pengguna akhir.<br>2. Repetisi *floating pill badges* (`"SIAP MEMULAI KOMPETISI"`, `"SPECTATOR LIVE VIEW"`, `"PODIUM JUARA TURNAMEN"`) dan animasi masuk seragam `initial={{ opacity: 0, y: 15 }}` di hampir setiap blok.<br>3. `RealtimeListener` merender pill melayang `fixed bottom-4 right-4 z-50` (`"SSE REALTIME"`) yang menutupi konten sudut kanan bawah layar di halaman bracket dan spectator. |
+| **CFM-09** | `frontend/components/landing/navbar.tsx:28-38`<br>`frontend/components/landing/footer.tsx:15-34`<br>`frontend/app/(public)/t/[id]/page.tsx:86-105` | Navigation & Product Relevance | **Masalah Struktur Navbar & Footer**:<br>1. `navbar.tsx:35-37` menampilkan menu `"Bagan Publik"` tetapi mengarah ke `href="/login"`, yang membingungkan pengguna.<br>2. `navbar.tsx` tidak memiliki menu navigasi mobile (hamburger/drawer) sama sekali (`hidden md:flex`), sehingga pengguna mobile tidak dapat mengakses menu navigasi.<br>3. `footer.tsx:26-33` menampilkan link eksternal generik ke `https://github.com` (root GitHub, bahkan bukan repositori dokumentasi pengguna) dan jargon teknis `"Modern Esports Tournament Engine"`.<br>4. Header di halaman publik `/t/[id]` selalu menampilkan tombol `"Masuk Organizer"` meskipun penyelenggara sudah login. |
 
-### 2.2 Backend, Security & Business Logic Audit
+### 3.2 Potential Issues (Memerlukan Validasi & Penanganan Saat Eksekusi)
 
-#### A. Audit Authentication, Authorization & Security
-1. **Tidak Ada Pemeriksaan Otorisasi pada Mutasi Bracket, Match, dan Peserta (CRITICAL)**:
-   - `features/bracket/actions/bracket-actions.ts` (`generateBracketAction`): Menerima `tournamentId: string`, langsung menghapus seluruh match pada stage (`await supabase.from("matches").delete().eq("stage_id", stage.id)`) dan membuat ulang jadwal tanpa memverifikasi `supabase.auth.getUser()` maupun `tournament.owner_id`.
-   - `features/bracket/actions/match-actions.ts` (`updateMatchDetails`, `updateBRMatchScoreAction`, `updateMatchParticipantAction`): Tidak memeriksa identitas pemanggil sama sekali. Lebih parah lagi, pada baris 19–28 di `updateMatchDetails`:
-     ```ts
-     for (const p of participants) {
-       if (p.id && p.name) {
-         await supabase.from("participants").update({ name: p.name }).eq("id", p.id);
+| ID Potensi | Lokasi File | Deskripsi Potensi Masalah & Rencana Validasi |
+| :--- | :--- | :--- |
+| **POT-01** | `frontend/features/bracket/components/br-score-modal.tsx:47-75`<br>`backend/internal/transport/http/handler/bracket_handler.go`<br>`backend/internal/service/standings_service.go:84-127` | **Pre-populasi Skor Battle Royale Saat Mengedit Ulang Match yang Sudah Selesai**: Saat admin membuka kembali `BRScoreModal` untuk mengedit hasil game yang sudah `COMPLETED`, `br-score-modal.tsx:48` membaca `match.scores?.results` yang selalu kosong karena hasil BR disimpan di tabel `battle_royale_match_results`. Perlu divalidasi apakah `StageView` atau objek `Match` pada mode `BATTLE_ROYALE` perlu menyertakan `br_results` per match (atau endpoint `GET` hasil match) agar modal edit menampilkan nilai placement & kills yang sudah tersimpan sebelumnya, bukan mereset form menjadi kosong. |
+| **POT-02** | `frontend/features/bracket/components/standings-table.tsx:241-243`<br>`frontend/app/dashboard/tournaments/[id]/bracket/page.tsx` | **Visibilitas Tombol `AdvanceButton` ("Lanjut ke Babak Knockout Playoff")**: Di `standings-table.tsx:118 & 241`, tombol `<AdvanceButton />` muncul setiap kali `isFinished && !isReadOnly` pada semua tabel `StandingsTable`, termasuk pada turnamen murni `ROUND_ROBIN` (Liga penuh tanpa babak Knockout) dan bahkan ketika stage Knockout pada `HYBRID_UCL` sudah pernah dibuat! Kondisi render `<AdvanceButton />` harus divalidasi agar hanya muncul jika `tournament.format_type === 'HYBRID_UCL'` dan babak Knockout belum memiliki pertandingan. |
+| **POT-03** | `frontend/features/bracket/components/standings-table.tsx:131`<br>`frontend/app/dashboard/tournaments/[id]/bracket/page.tsx:136-164`<br>`frontend/app/(public)/t/[id]/page.tsx:214-243` | **Tampilan `ChampionsView` pada Format `ROUND_ROBIN` dan `BATTLE_ROYALE`**: Meskipun backend Go (`standings_service.go:477-515`) sudah menghitung objek `champions` untuk `ROUND_ROBIN` dan `BATTLE_ROYALE`, komponen `<ChampionsView />` saat ini hanya dipasang di dalam `<BracketVisualizer />` (khusus Elimination) dan tidak dirender di `<StandingsTable />` maupun `<BattleRoyaleView />` ketika turnamen selesai (`tournament.status === 'COMPLETED'`). |
+| **POT-04** | `frontend/features/bracket/components/bracket-visualizer.tsx:58-108` | **Sinkronisasi Kalkulasi Ulang Konektor SVG Saat Tab / Stage Berpindah atau Font Selesai Dimuat**: `calculatePaths` saat ini hanya dijalankan pada `mount`, `setTimeout(..., 150)`, `window.resize`, dan `onScroll`. Jika pengguna beralih antar-stage (`?stage=...`), memperbarui skor via SSE, atau ukuran kontainer berubah karena pemuatan font/layout shift, koordinat DOM `getBoundingClientRect()` dapat bergeser tanpa memicu `window.resize`. Perlu digunakan `ResizeObserver` pada elemen kanvas dan kartu match. |
+
+### 3.3 Design Improvements (Berdasarkan Arahan Produk)
+
+| ID Desain | Area Cakupan | Arahan Perbaikan Produk & Kualitas Visual |
+| :--- | :--- | :--- |
+| **IMP-01** | **Color System & Theme Architecture (`app/globals.css`)** | Meninggalkan skema monokrom hitam-putih-abu yang datar dan membangun palet **"Tactical Broadcast Slate & Crimson Volt"** yang relevan dengan dunia kompetisi gaming/esports, lengkap dengan blok `@theme` Tailwind v4 untuk seluruh token permukaan, teks, border, aksen utama, aksen sekunder, serta warna status/bracket. |
+| **IMP-02** | **Typography & Brand Personality (`app/layout.tsx`, `app/globals.css`)** | Mengganti kombinasi tipografi generik dengan sistem 3-font yang memiliki otoritas kompetitif: **Display Font (`Space Grotesk` / `Chakra Petch`)** untuk headline, nama turnamen, dan header babak; **Sans Font (`Plus Jakarta Sans`)** untuk keterbacaan body & form UI; serta **Tabular Mono (`JetBrains Mono`)** khusus untuk skor, ranking, seed, dan matriks statistik. |
+| **IMP-03** | **Hero Section — Supported Game Logos (`components/landing/hero.tsx`, `public/games/*`)** | Merancang ulang Hero section dengan komposisi *art-directed* yang menonjolkan **10 logo game resmi yang benar-benar didukung di database** (`Mobile Legends: Bang Bang`, `Dota 2`, `League of Legends`, `Valorant`, `Counter-Strike 2`, `EA Sports FC 24`, `eFootball 2024`, `PUBG Mobile`, `Free Fire`, `Apex Legends`) beserta indikator genre dan pratinjau bagan langsung, tanpa badge promosi tech stack. |
+| **IMP-04** | **Navbar & Footer Produk Kompetisi (`components/landing/navbar.tsx`, `footer.tsx`)** | Merancang ulang Navbar dengan hierarki brand, navigasi kontekstual (termasuk menu mobile responsif dan kesadaran status autentikasi), serta merombak Footer agar bersih dari link GitHub dan berfokus pada navigasi produk & daftar cabang/format kompetisi yang riil. |
+| **IMP-05** | **Global De-Slop & Component Polish** | Menyederhanakan pembungkusan kartu berlapis (*card-inside-card*), menghapus animasi entrance Framer Motion yang repetitif, mengintegrasikan status koneksi SSE langsung ke header turnamen (menggantikan floating pill di kanan bawah), dan menyempurnakan tampilan tabel klasemen serta kartu pertandingan. |
+
+## 4. Functional Bugs & Fix Specifications
+
+### 4.1 Bug 2.A — React Unique Key Warning & Blank Names pada `StandingsTable` (serta `BRLeaderboard`)
+
+#### A. Analisis Akar Masalah (Root Cause Analysis)
+Berdasarkan investigasi pada `frontend/features/bracket/components/standings-table.tsx` dan `backend/internal/service/standings_service.go`:
+1. **Apakah `row.participant_id` bernilai `null`, `undefined`, atau tidak unik?**
+   **Ya — `row.participant_id` selalu bernilai `undefined` ketika prop `standings` disuplai oleh backend Go.**
+   Backend Go (`standings_service.go:14-25`) mendefinisikan `StandingRow` dengan field `Participant domain.Participant` (`json:"participant"`). JSON yang dikirim oleh API `/api/v1/tournaments/:id/stages/:stageId/view` adalah:
+   ```json
+   {
+     "group_label": "Grup A",
+     "rows": [
+       {
+         "participant": {
+           "id": "550e8400-e29b-41d4-a716-446655440000",
+           "name": "ONIC Esports",
+           "seed_number": 1,
+           "group_name": "A"
+         },
+         "played": 3,
+         "won": 3,
+         "drawn": 0,
+         "lost": 0,
+         "goals_for": 6,
+         "goals_against": 1,
+         "goal_difference": 5,
+         "points": 9,
+         "rank": 1
        }
-     }
-     ```
-     Loop tersebut memperbarui nama peserta berdasarkan `p.id` saja tanpa memeriksa apakah peserta tersebut milik `tournamentId` yang sedang diedit maupun apakah pemanggil adalah pemilik turnamen.
-   - `features/bracket/actions/stage-actions.ts` (`advanceToKnockoutAction`): Tidak memiliki pengecekan autentikasi dan kepemilikan turnamen.
-   - `features/participants/actions/participant-actions.ts`: Fungsi `addParticipant` dan `updateParticipant` tidak memanggil `supabase.auth.getUser()`. Fungsi `deleteParticipant` memang memanggil `getUser()`, tetapi **tidak memeriksa apakah turnamen tempat peserta tersebut berada adalah milik `user.id`**.
-2. **User & Email Enumeration pada Login dengan Username (HIGH)**:
-   Pada `app/login/page.tsx` (baris 25–36), ketika pengguna memasukkan *username* (bukan email), browser mengeksekusi:
-   ```ts
-   const { data: profile } = await supabase
-     .from('profiles')
-     .select('email')
-     .eq('username', emailToLogin)
-     .single()
+     ]
+   }
    ```
-   Ini berarti tabel `profiles` harus dapat dibaca secara publik oleh *anon key* agar login via username berjalan, yang sekaligus mengekspos alamat email seluruh pengguna kepada publik dan memungkinkan enumerasi daftar akun.
-3. **Open Redirect pada Auth Callback (MEDIUM)**:
-   Pada `app/auth/callback/route.ts` (baris 7 & 16–22), parameter query `next` diambil mentah (`const next = searchParams.get('next') ?? '/dashboard'`) lalu digabungkan ke URL redirect. Jika penyerang mengirimkan `?code=...&next=//attacker.com`, pengguna dapat diarahkan ke domain eksternal setelah pertukaran sesi berhasil.
-4. **Kebijakan Password Lemah & Inkonsistensi Sinkronisasi Profil (MEDIUM)**:
-   Password hanya divalidasi minimal 6 karakter (`register/page.tsx`, `update-password/page.tsx`, `profile-actions.ts`). Selain itu, `updateBasicInfoAction` di `features/auth/actions/profile-actions.ts` hanya menyimpan `first_name`, `last_name`, dan `phone` ke dalam `auth.users.user_metadata`, tanpa memperbarui tabel `profiles`. Fungsi `updateEmailAction` dan `updatePasswordAction` di `profile-actions.ts` merupakan *dead code* yang tidak pernah dipanggil di UI.
+   Namun, di `standings-table.tsx:29-42`, fungsi pemetaan `calculatedRows` menyalin elemen `r` mentah tanpa mengekstrak `r.participant.id` ke `participant_id` dan `r.participant.name` ke `participant_name`.
+2. **Apakah terdapat participant yang muncul lebih dari sekali dalam dataset standings?**
+   Tidak dalam grup yang sama; di `standings_service.go:188`, baris per grup disimpan di dalam `rowsMap := make(map[uuid.UUID]*StandingRow)` yang diindeks berdasarkan `participant.ID` unik, lalu dikelompokkan per `grpName` di `standings-table.tsx:109-114`.
+3. **Mengapa React tetap memunculkan warning pada `standings-table.tsx:156`?**
+   Karena di baris 155–157:
+   ```tsx
+   {rows.map((row, idx) => (
+     <tr key={row.participant_id}>
+   ```
+   Setiap `row` memiliki `row.participant_id === undefined`. Ketika terdapat $\ge 2$ peserta di dalam tabel, React mendeteksi beberapa sibling `<tr>` dengan key yang sama (`undefined`) dan memunculkan Console Error `Each child in a list should have a unique "key" prop`.
+4. **Apakah terdapat masalah serupa pada komponen tabel atau list lainnya?**
+   **Ya, ditemukan pada `BRLeaderboard` (`features/bracket/components/br-leaderboard.tsx:33-42 & 130-133`)!**
+   Jika `standings` / `brLeaderboard` diteruskan dari backend Go (`BRLeaderboardRow` juga menggunakan objek bersarang `participant: { id, name }`), `br-leaderboard.tsx:35` memetakan `teamId: s.participant_id` (`undefined`), sehingga `<tr key={row.teamId}>` di baris 132 akan mengalami React key warning yang identik.
 
-#### B. Audit Domain Logic & Algoritma Turnamen
-1. **Bug Fatal Double Elimination — Penanganan BYE di Round 1 (`features/bracket/generators/double-elimination.ts` baris 166–187)**:
-   Saat jumlah peserta bukan pangkat dua (misal 6 tim di bracket 8 slot), generator mengatur match Round 1 yang tidak memiliki lawan (`isBye = pA && !pB`) menjadi `status: "COMPLETED"` dan `winner_id: pA.id`. Namun:
-   - Generator **tidak memindahkan `pA.id` ke slot match Round 2 (`next_match_id`)** (berbeda dengan `single-elimination.ts` baris 115–123 yang melakukan *auto-advance*). Akibatnya, `pA` berhenti di Round 1 dan tidak muncul di Round 2 sampai admin mengedit skor Round 1 secara manual.
-   - Generator menggunakan `participants[index * 2]` dan `participants[index * 2 + 1]` secara berurutan tanpa menggunakan `getStandardSeedingOrder`, sehingga semua BYE menumpuk di match terakhir Round 1. Ketika dua match terakhir keduanya BYE, match Lower Bracket Round 1 yang menunggu *loser* dari kedua match tersebut menjadi kosong selamanya dan tidak pernah ditandai selesai, sehingga `checkAndCompleteStage` tidak akan pernah menandai turnamen `COMPLETED`.
-2. **Bug Fatal Double Elimination — Pemetaan Drop-to-Lower-Bracket (`features/bracket/services/progression-service.ts` baris 20–52)**:
-   - Rumus `let targetLBRound = -((wbRound * 2) - 1)` salah untuk struktur ronde Lower Bracket yang dibuat oleh `double-elimination.ts`. Di `double-elimination.ts`, untuk 8 tim (`wbRounds = 3`, `lbTotalRounds = 4`):
-     - LB Round `-1` (2 match): mempertemukan 4 *loser* dari WB Round 1.
-     - LB Round `-2` (2 match): mempertemukan 2 pemenang LB Round `-1` melawan 2 *loser* dari WB Round 2 (UB Semifinal).
-     - Namun, di `dropToLowerBracket`, ketika match WB Round 2 selesai, `nextMatchData.round_number` adalah `3` (UB Final, bukan `999`), sehingga koreksi `if (nextMatchData.round_number === 999) targetLBRound += 1` tidak dijalankan. Akibatnya, *loser* WB Round 2 dikirim ke `targetLBRound = -((2 * 2) - 1) = -3` (LB Semifinal), melompati LB Round `-2`!
-   - Selain itu, pada `wbRound > 1`, `targetMatchNum = Math.ceil(currentMatch.match_number / 2)` menyebabkan *loser* dari WB R2 Match 1 (`ceil(1/2) = 1`) dan WB R2 Match 2 (`ceil(2/2) = 1`) keduanya dimasukkan ke Match #1 di Lower Bracket, sedangkan Match #2 di Lower Bracket tidak pernah menerima *loser* dari Upper Bracket.
-3. **Bug Fatal Hybrid UCL — Babak Knockout Single Elimination Tidak Lengkap (`features/bracket/actions/stage-actions.ts` baris 129–153)**:
-   Saat turnamen berformat `HYBRID_UCL` dengan game bergenre `SPORTS` (yang membuat Stage 2 bertipe `SINGLE_ELIMINATION`), fungsi `advanceToKnockoutAction` melakukan `insert` manual hanya untuk `round_number: 1` tanpa membuat match babak berikutnya (Semifinal/Final) dan tanpa mengisi `next_match_id`. Berbeda dengan cabang `DOUBLE_ELIMINATION` (baris 192) yang memanggil `generateDoubleElimination`, cabang `SINGLE_ELIMINATION` tidak memanggil `generateSingleElimination`.
-4. **Koreksi Skor Tidak Membatalkan Progresi Hilir (`features/bracket/actions/match-actions.ts`)**:
-   Jika admin salah memasukkan skor pada Match #1 (sehingga Tim A maju ke Round 2 dan Tim B turun ke Lower Bracket), lalu admin mengoreksi skor Match #1 sehingga Tim B yang menang, `updateMatchDetails` hanya menimpa slot di match berikutnya tanpa memeriksa apakah match selanjutnya sudah dimainkan dan tanpa menghapus Tim A dari Lower Bracket jika terjadi perubahan pemenang.
-5. **Ketidaksesuaian Enum Status Match (`features/bracket/actions/match-actions.ts` baris 55)**:
-   Jika skor seri (`scores.a === scores.b`), `updateMatchDetails` menyimpan `status = "IN_PROGRESS"`, padahal tipe `Match["status"]` di `types/database.ts` dan seluruh filter UI menggunakan `"SCHEDULED" | "ONGOING" | "COMPLETED"`.
-6. **Inkonsistensi Perhitungan Klasemen Liga (`StandingsTable` vs `advanceToKnockoutAction` vs `StandingsPage`)**:
-   - `features/bracket/components/standings-table.tsx` (baris 30) menghitung match ke dalam klasemen jika `m.status === 'COMPLETED' || (m.scores && (m.scores.a > 0 || m.scores.b > 0))` serta hanya mengurutkan berdasarkan `points` lalu `gd` (tanpa tie-breaker `gf`).
-   - `features/bracket/actions/stage-actions.ts` (baris 37 & 112) hanya menghitung match dengan `status === "COMPLETED"` dan mengurutkan berdasarkan `points`, `gd`, lalu `gf`. Akibatnya, urutan tim yang tampil di tabel UI dapat berbeda dengan tim yang diloloskan ke babak *knockout* oleh server!
-   - Kedua file tersebut mengabaikan konfigurasi `tournament.settings.pointsPerWin` dan selalu mematok 3 poin untuk menang.
+#### B. Spesifikasi Perbaikan
+1. **Penyelarasan Kontrak Backend & Normalisasi Frontend (Pertahanan Berlapis)**:
+   - Di **Backend Go (`backend/internal/service/standings_service.go`)**: Tambahkan field eksplisit `ParticipantID uuid.UUID` (`json:"participant_id"`) dan `ParticipantName string` (`json:"participant_name"`) pada struct `StandingRow` dan `BRLeaderboardRow` (di samping tetap mempertahankan objek `participant` untuk kompatibilitas penuh).
+   - Di **Frontend (`frontend/features/bracket/components/standings-table.tsx`)**: Pada saat menormalisasi `standings` dari backend di `calculatedRows`, ekstrak identitas peserta secara deterministik:
+     ```ts
+     const participantId = r.participant?.id ?? r.participant_id ?? '';
+     const participantName = r.participant?.name ?? r.participant_name ?? 'Peserta';
+     ```
+     Gunakan `key={`${grpName}-${row.participant?.id || row.participant_id}`}` pada elemen `<tr>` (tidak menggunakan array index `idx` sebagai key utama agar identitas baris tetap stabil saat urutan peringkat berubah karena pembaruan skor SSE).
+   - Perbaiki pula pengecekan highlight lolos babak grup (`standings-table.tsx:159 & 178`) dari `grpName.includes('Group')` menjadi pengecekan eksplisit apakah turnamen berformat `HYBRID_UCL` atau terdapat lebih dari 1 grup (`groupedStandings.size > 1`), sehingga 2 tim teratas di `"Grup A"`, `"Grup B"`, dst. mendapatkan indikator lolos `Q` secara konsisten.
+2. **Perbaikan Serupa pada `BRLeaderboard` (`features/bracket/components/br-leaderboard.tsx`)**:
+   - Terima prop `brLeaderboard?: BRLeaderboardRow[]` dari `StageViewData.br_leaderboard`.
+   - Petakan `teamId: row.participant?.id || row.participant_id`, `teamName: row.participant?.name || row.participant_name`, `matchesPlayed: row.matches_played`, `wwcd: row.wins`, `placementPoints: row.placement_points`, `killPoints: row.kill_points`, `totalKills: row.total_kills`, dan `totalPoints: row.total_points`.
+   - Gunakan `key={row.teamId}` yang dijamin berisi UUID unik `participant.id`.
 
-### 2.3 Database & Data Integrity Audit
+### 4.2 Bug 2.B — Competition Format Selection Visual Selection Bug & Payload Mismatch
 
-Berdasarkan penelusuran `types/database.ts` dan seluruh query Supabase di codebase, skema database lama terdiri dari 6 entitas (`games`, `tournaments`, `stages`, `participants`, `matches`, serta `profiles` yang direferensikan di `app/login/page.tsx` namun tidak ada di `types/database.ts`).
+#### A. Analisis Akar Masalah (Root Cause Analysis)
+Berdasarkan audit pada `frontend/features/tournaments/components/create-tournament-form.tsx` dan `frontend/app/globals.css`:
+1. **State Management & Controlled Selection**:
+   State `selectedFormat` dikelola melalui `const [selectedFormat, setSelectedFormat] = useState<TournamentFormat | ''>('')` (baris 60). Saat kartu diklik (`onClick={() => setSelectedFormat(format.id)}` pada baris 208), state React sebenarnya diperbarui dengan benar (terbukti bagian ke-3 form `"Aturan Pertandingan"` pada baris 240 `{selectedGame && selectedFormat && (...)}` muncul setelah kartu diklik).
+2. **Mengapa Pilihan yang Dipilih Tidak Terlihat Secara Visual?**
+   - Di `create-tournament-form.tsx:209-225`, styling kondisi aktif (`isSelected === true`) bergantung sepenuhnya pada kelas utilitas `bg-accent/10`, `border-accent`, dan `<div className="w-2 h-2 rounded-full bg-accent" />`.
+   - Di `frontend/app/globals.css`, proyek menggunakan `@import "tailwindcss";` (Tailwind CSS v4), namun **tidak mendefinisikan `@theme`** untuk mendaftarkan `--color-accent`, `--color-surface-base`, `--color-surface-raised`, `--color-surface-elevated`, `--color-border-subtle`, maupun `--color-border-default`.
+   - Karena token tersebut tidak terdaftar di Tailwind v4, browser tidak menerima aturan CSS apa pun untuk `bg-accent/10`, `border-accent`, maupun `bg-accent`. Baik kartu yang dipilih (`isSelected = true`) maupun yang tidak dipilih (`isSelected = false`) sama-sama memiliki background transparan, border default abu-abu tipis, dan titik radio dalam yang transparan (`background: transparent`).
+3. **Masalah Aksesibilitas & Navigasi Keyboard**:
+   Kartu format menggunakan elemen `<div onClick={...}>` tanpa `role="radio"`, `aria-checked`, `tabIndex`, atau handler tombol `Space`/`Enter`, sehingga tidak dapat dipilih menggunakan navigasi keyboard (`Tab`).
+4. **Bug Kritis Sinkronisasi Pengiriman Form ke Backend (`create-tournament-form.tsx:96-113`)**:
+   Ketika form dikirim (`handleSubmit`), nilai `bestOf`, `homeAway`, `hasThirdPlace`, dan `totalMatches` dibungkus ke dalam properti `match_rules`. Sementara itu, backend Go (`tournament_handler.go:31-60`) menerapkan `dec.DisallowUnknownFields()` pada `CreateTournamentPayload` yang hanya menerima field tingkat atas (`best_of`, `home_away`, `has_third_place`, `br_total_matches`). Akibatnya, pengiriman form gagal dengan status `400 Bad Request`.
+5. **Ketidaksesuaian Daftar Genre pada `FORMAT_OPTIONS` (`create-tournament-form.tsx:20-51`)**:
+   `FORMAT_OPTIONS` mencantumkan `'FIGHTING'` (genre yang tidak ada di constraint PostgreSQL `migrations/000001_init_schema.up.sql:69`) dan mengizinkan `'BATTLE_ROYALE'` pada `SINGLE_ELIMINATION` (baris 25), tetapi `handleGameChange` (baris 79–81) memaksa `setSelectedFormat('BATTLE_ROYALE')` ketika game bergenre `BATTLE_ROYALE` dipilih.
 
-Masalah utama pada desain database saat ini yang wajib diperbaiki pada database PostgreSQL baru:
-1. **Ketiadaan Skema & Migrasi Terkontrol**: Tidak ada file `.sql` di dalam repositori. Pengembang atau AI coding agent tidak dapat mereproduksi database secara lokal tanpa menebak struktur tabel dari kode TypeScript.
-2. **Penyalahgunaan Kolom Polimorfik JSONB `matches.scores`**:
-   Kolom `scores` di tabel `matches` dipakai untuk menyimpan:
-   - Skor pertandingan reguler: `{ "a": 2, "b": 1, "note": "BYE" }`
-   - Metadata grup Battle Royale: `{ "groups": ["A", "B"] }`
-   - Array hasil akhir seluruh tim Battle Royale: `{ "results": [{ "teamId": "...", "rank": 1, "kills": 12, "total": 22 }] }`
-   Desain ini melanggar normalisasi dasar: `teamId` di dalam JSONB tidak memiliki *foreign key constraint* ke `participants(id)`, tidak dapat diindeks untuk agregasi cepat di level SQL, dan memaksa aplikasi mengunduh seluruh dokumen JSONB untuk menghitung klasemen di memori JavaScript.
-3. **Ketiadaan Relasi Eksplisit untuk Jalur Kalah (`loser_next_match_id`) dan Posisi Slot**:
-   Tabel `matches` hanya memiliki `next_match_id` tanpa `next_match_slot` (`A` atau `B`) dan tanpa `loser_next_match_id` / `loser_next_match_slot`. Akibatnya, `progression-service.ts` harus menebak target match Lower Bracket dan Bronze Match menggunakan rumus nomor ronde negatif (`-1`, `-2`) dan angka ajaib (`round_number === 999` untuk Grand Final, `match_number === 2` untuk Bronze Match).
-4. **Penghapusan Berjenjang Manual & Risiko Data Yatim (*Orphaned Data*)**:
-   Pada `features/tournaments/actions/delete-actions.ts`, penghapusan turnamen dilakukan melalui 4 query `DELETE` berurutan dari aplikasi (`matches` -> `stages` -> `participants` -> `tournaments`), yang menunjukkan bahwa *foreign key* di database lama tidak dikonfigurasi dengan `ON DELETE CASCADE` secara konsisten. Selain itu, pada `deleteTournament`, penghapusan `matches`, `stages`, dan `participants` dieksekusi **sebelum** memverifikasi bahwa `tournaments.owner_id === user.id`! Jika pengguna bukan pemilik turnamen, query terakhir (`delete().eq('id', id).eq('owner_id', user.id)`) tidak menghapus baris turnamen, tetapi seluruh `matches`, `stages`, dan `participants` milik turnamen orang lain tersebut **sudah terlanjur terhapus**!
+#### B. Spesifikasi Perbaikan
+1. **Registrasi Penuh Token Tema di `frontend/app/globals.css` (`@theme`)**:
+   Definisikan seluruh variabel warna semantik di dalam blok `@theme` Tailwind v4 sehingga `bg-accent`, `border-accent`, `text-accent`, `bg-surface-*`, dan `border-border-*` menghasilkan aturan CSS yang valid di seluruh aplikasi.
+2. **Desain Ulang Komponen Pemilih Format Kompetisi (`create-tournament-form.tsx`)**:
+   - Gunakan elemen `<button type="button" role="radio" aria-checked={isSelected}>` di dalam kontainer `role="radiogroup"` agar mendukung penuh fokus keyboard (`focus-visible:ring-2 focus-visible:ring-accent`) dan pembaca layar.
+   - Berikan indikator visual berlapis yang sangat jelas dan proporsional saat `isSelected === true`:
+     - **Border**: `border-2 border-accent` (kontras tinggi terhadap `border border-border-default` pada kartu tidak aktif).
+     - **Surface Background**: `bg-accent/12` dengan subtle top-left accent bar atau glow internal yang terukur (`shadow-[inset_0_1px_0_0_rgba(255,70,85,0.25)]`).
+     - **Badge & Radio Indicator**: Lingkaran indikator di kanan atas kartu yang berubah menjadi terisi penuh (`bg-accent text-white`) dengan ikon centang (`Check` 12px) serta badge tag `"DIPILIH"` (`font-mono text-[10px] uppercase tracking-wider bg-accent text-white px-2 py-0.5 rounded`).
+     - **Icon & Typography**: Ikon representatif untuk tiap format (`GitBranch` untuk Single Elim, `GitFork` untuk Double Elim, `Table2` untuk Round Robin, `Trophy` untuk Hybrid UCL, `Crosshair` untuk Battle Royale) yang berubah warna dari `text-text-muted` menjadi `text-accent`, diikuti judul `text-text-primary font-bold`.
+3. **Perbaikan Serupa pada Pemilih Best-Of, Putaran Battle Royale & Status Turnamen (`tournament-settings-form.tsx`)**:
+   Terapkan pola tombol seleksi aktif yang sama (`border-2 border-accent bg-accent/15 text-text-primary font-bold` + indikator centang/dot aktif) pada pilihan `BO1`/`BO3`/`BO5`, jumlah ronde Battle Royale, dan kartu `Status Turnamen` (`DRAFT`, `ONGOING`, `COMPLETED`).
+4. **Perbaikan Payload `handleSubmit` di `create-tournament-form.tsx` & `lib/api-client.ts`**:
+   Kirimkan konfigurasi turnamen secara langsung sebagai properti tingkat atas yang sesuai dengan kontrak Go `CreateTournamentPayload`:
+   ```ts
+   await apiClient.tournaments.create({
+     title: title.trim(),
+     game_id: gameId,
+     format_type: selectedFormat as TournamentFormat,
+     description: description.trim() || undefined,
+     best_of: parseInt(bestOf, 10) || 1,
+     home_away: homeAway,
+     has_third_place: hasThirdPlace,
+     br_total_matches: selectedFormat === 'BATTLE_ROYALE' ? totalMatches : undefined,
+   });
+   ```
 
-### 2.4 Feature Completeness & Functional Bugs
+## 5. Updated Visual Identity & Design System
 
-| Fitur / Modul | Lokasi Implementasi Saat Ini | Status Aktual | Masalah / Bug yang Terverifikasi |
+### 5.1 Design Direction: "Tactical Broadcast Slate & Crimson Volt"
+Untuk menjawab masalah tampilan monokrom hitam-putih yang terasa monoton dan kurang berkarakter, identitas visual Gridify dirancang ulang dengan arah **"Tactical Broadcast Slate & Crimson Volt"** — terinspirasi dari sistem grafis siaran turnamen esports tingkat tinggi (*VCT Broadcast HUD*, *ESL Pro Tour*, *FACEIT Pro League*, dan *Challengermode*).
+
+**Alasan Pemilihan Arah Desain**:
+1. **Permukaan Slate-Carbon Berstruktur Dingin (`#0B0E14` → `#111620` → `#171E2B`)**:
+   Menggantikan hitam-abu mati (`#09090B` / `#121215`) dengan *cool gunmetal slate* yang memiliki sedikit rona biru-baja gelap (*deep tactical navy-slate*). Permukaan ini memberikan kedalaman arsitektural seperti ruang kendali siaran (*broadcast control room*) dan menjaga keterbacaan tabel/bagan dalam durasi penggunaan yang panjang.
+2. **Aksen Utama yang Berani & Kompetitif — Crimson Valor (`#F43F5E` / `#E11D48`)**:
+   Menggantikan tombol primer putih polos (`bg-zinc-100 text-zinc-950`) yang membuat aplikasi terasa seperti template dokumentasi SaaS generik. Warna **Crimson Valor (`#F43F5E`)** memberikan energi kompetisi esports yang tegas untuk CTA utama, pilihan format yang sedang aktif, dan penanda aksi penting tanpa memerlukan gradasi neon atau efek *blur glow* murahan.
+3. **Aksen Sekunder & Fungsional untuk Progresi Kompetisi**:
+   - **Cyber Cyan / Electric Sky (`#0EA5E9` / `#38BDF8`)**: Digunakan khusus untuk menandai progresi jalur Upper Bracket, tahapan grup/liga aktif, dan fokus interaktif.
+   - **Championship Gold (`#F59E0B` / `#FBBF24`)**: Digunakan secara eksklusif untuk Grand Final, Juara 1, dan statistik WWCD.
+   - **Victory Emerald (`#10B981` / `#34D399`)**: Digunakan untuk pemenang pertandingan (`winner_id`), status `ONGOING` / `LIVE`, dan kuota lolos (`Q`).
+
+### 5.2 Semantic Color Tokens (`frontend/app/globals.css`)
+
+Seluruh token wajib didefinisikan di `:root` dan dipetakan ke dalam `@theme` Tailwind CSS v4 di `frontend/app/globals.css`:
+
+| Kategori | Nama Token CSS / Kelas Tailwind v4 | Nilai Hex | Aturan Penggunaan Spesifik |
 | :--- | :--- | :--- | :--- |
-| **Registrasi & Login (Email/Username)** | `app/login/page.tsx`, `app/register/page.tsx`, `app/auth/callback/route.ts` | Berfungsi sebagian | Login username melakukan query `profiles` publik (enumerasi email); callback rentan open redirect; validasi password minimal 6 karakter. |
-| **Lupa & Reset Password** | `app/forgot-password/page.tsx`, `app/update-password/page.tsx`, `features/auth/components/security-form.tsx` | Berfungsi sebagian | Menggunakan Supabase client-side reset link; fungsi server action `updateEmailAction` & `updatePasswordAction` di `profile-actions.ts` tidak terpakai (*dead code*). |
-| **Manajemen Profil Pengguna** | `app/dashboard/profile/page.tsx`, `features/auth/components/basic-info-form.tsx` | Berfungsi sebagian | Hanya mengubah `user_metadata` di Supabase Auth; tidak tersinkronisasi dengan tabel `profiles` (username tidak bisa dilihat/diubah). |
-| **Dashboard Overview** | `app/dashboard/page.tsx` | Berfungsi sebagian | Kartu statistik "Jadwal Mendatang" di-hardcode bernilai `0` (baris 77). |
-| **Daftar & Pencarian Turnamen** | `app/dashboard/tournaments/page.tsx` | Berfungsi | Pencarian hanya bekerja saat pengguna menekan `Enter` (native form submit) tanpa tombol cari atau debounce. |
-| **Pembuatan Turnamen & Match Config** | `app/dashboard/create/page.tsx`, `features/tournaments/components/create-tournament-form.tsx` | UI lengkap, Logic setengah jalan | Opsi `Best Of (BO1/BO3/BO5)`, `Mode Home & Away`, dan `pointsPerWin` disimpan ke JSON `settings`, tetapi **tidak pernah diimplementasikan** pada generator jadwal maupun validasi skor match. |
-| **Overview Turnamen** | `app/dashboard/tournaments/[id]/page.tsx`, `app/dashboard/tournaments/[id]/layout.tsx` | Berfungsi dengan bug UI | Header `TournamentLayout` (baris 90) menampilkan UUID mentah `tournament.game_id` alih-alih nama game; tab navigasi tidak memiliki indikator *active state*. |
-| **Manajemen Peserta** | `app/dashboard/tournaments/[id]/participants/page.tsx`, `features/participants/**` | Berfungsi dengan celah keamanan | Tidak ada proteksi kepemilikan di server action; form tambah/hapus peserta tetap bisa diakses dan dieksekusi meskipun status turnamen sudah `ONGOING` atau `COMPLETED` (hanya menampilkan banner peringatan kuning). Tidak ada fitur edit peserta di halaman ini meskipun `updateParticipant` ada di `participant-actions.ts`. |
-| **Single Elimination Bracket** | `features/bracket/generators/single-elimination.ts`, `bracket-visualizer.tsx` | Berfungsi | Garis konektor bracket (`BracketConnector`) menggunakan tinggi statis yang rusak pada ronde lanjut; koreksi skor match yang sudah selesai tidak me-reset match hilir secara bersih. |
-| **Double Elimination Bracket** | `features/bracket/generators/double-elimination.ts`, `progression-service.ts` | **Rusak pada kasus BYE & ≥ 8 tim** | Peserta yang mendapat BYE di Round 1 tidak otomatis maju ke Round 2; LB Round 1 macet jika ada BYE; *loser* WB Round 2 salah lompat ke LB Round `-3` dan menumpuk di Match #1. |
-| **Round Robin (Liga)** | `features/bracket/generators/round-robin.ts`, `standings-table.tsx`, `league-match-card.tsx` | **Bug Kompilasi & Logic** | `LeagueMatchCard` memanggil `<ScoreModal>` tanpa prop wajib `allParticipants`; opsi `homeAway` diabaikan (selalu 1 leg); `pointsPerWin` diabaikan. |
-| **Hybrid UCL (Group + Knockout)** | `features/tournaments/actions/tournament-actions.ts`, `stage-actions.ts` | **Rusak untuk Genre SPORTS** | Saat lanjut ke babak Knockout `SINGLE_ELIMINATION`, sistem hanya membuat match Round 1 tanpa Semifinal/Final dan tanpa `next_match_id`. |
-| **Battle Royale Mode** | `features/bracket/generators/battle-royale.ts`, `br-view.tsx`, `br-leaderboard.tsx`, `br-score-modal.tsx` | Berfungsi dengan keterbatasan | Jumlah match di-hardcode 6 game (`TOTAL_MATCH_TARGET = 6`), kapasitas lobby di-hardcode 16 tim, dan tabel poin di-hardcode statis di 2 file frontend. |
-| **Podium Juara (`ChampionsView`)** | `features/bracket/components/champions-view.tsx` | Hanya muncul di Elimination | Memiliki kode untuk `ROUND_ROBIN` dan `BATTLE_ROYALE`, tetapi komponen ini hanya dipasang di dalam `BracketVisualizer`, sehingga juara Liga dan Battle Royale tidak pernah ditampilkan. |
-| **Halaman Standings Khusus** | `app/dashboard/tournaments/[id]/standings/page.tsx` | **Rusak Total (Dead Page)** | Melakukan query ke kolom yang tidak ada (`player1_id`, `player2_id`, `player1_score`, `player2_score`) sehingga selalu gagal/kosong, dan tidak memiliki link di navigasi turnamen. |
-| **Public Spectator View & QR Share** | `app/(public)/t/[id]/page.tsx`, `share-button.tsx`, `realtime-listener.tsx` | Berfungsi | Setiap event perubahan tabel di Supabase memicu `router.refresh()` penuh tanpa *throttling/debouncing*. |
+| **Surface (Backgrounds)** | `--color-surface-base` (`bg-surface-base`) | `#0B0E14` | Latar belakang utama halaman (`body`) dan dasar kanvas bracket. |
+| **Surface (Cards)** | `--color-surface-raised` (`bg-surface-raised`) | `#111620` | Permukaan kartu utama, sidebar dashboard, navbar, dan container tabel. |
+| **Surface (Interactive)** | `--color-surface-elevated` (`bg-surface-elevated`) | `#171E2B` | Permukaan input form, header tabel, modal dialog, kartu match hover, dan tab aktif. |
+| **Surface (Subtle Glass)** | `--color-surface-overlay` (`bg-surface-overlay`) | `#1E2738` | Elemen badge sekunder, tooltip, dan highlight baris tabel saat hover. |
+| **Borders** | `--color-border-subtle` (`border-border-subtle`) | `#1E2636` | Garis pemisah internal tabel (`divide-y`), header kartu, dan garis grid halus. |
+| **Borders** | `--color-border-default` (`border-border-default`) | `#2A3447` | Border struktural kartu, input, match card standar, dan garis konektor bracket default. |
+| **Borders** | `--color-border-strong` (`border-border-strong`) | `#3B4963` | Border saat hover pada kartu interaktif dan pemisah seksi utama. |
+| **Typography** | `--color-text-primary` (`text-text-primary`) | `#F8FAFC` | Teks utama, judul halaman, nama tim pemenang, dan skor akhir (Kontras > 15:1). |
+| **Typography** | `--color-text-secondary` (`text-text-secondary`) | `#CBD5E1` | Body copy, label form, nama peserta terjadwal, dan navigasi sekunder (Kontras > 10:1). |
+| **Typography** | `--color-text-muted` (`text-text-muted`) | `#64748B` | Metadata tanggal, nomor urut match (`M#1`), teks placeholder, dan tim yang sudah gugur (Kontras ≥ 4.6:1). |
+| **Primary Brand Accent** | `--color-accent` (`bg-accent`, `text-accent`, `border-accent`) | `#F43F5E` | CTA utama ("Buat Turnamen"), indikator pilihan aktif (Format, BO, Status), dan garis indikator tab aktif. |
+| **Primary Accent Hover** | `--color-accent-hover` (`hover:bg-accent-hover`) | `#E11D48` | State hover/active untuk tombol primer dan link aksen utama. |
+| **Primary Accent Contrast** | `--color-accent-contrast` (`text-accent-contrast`) | `#FFFFFF` | Teks di atas permukaan `bg-accent`. |
+| **Secondary Tactical Accent** | `--color-secondary` (`text-secondary`, `border-secondary`) | `#38BDF8` | Indikator Upper Bracket, badge informasi stage, dan highlight konektor aktif. |
+| **Status: Victory / Live** | `--color-success` (`text-success`, `bg-success`) | `#10B981` | Pemenang match, garis konektor jalur menang, badge `ONGOING`/`LIVE`, dan indikator lolos `Q`. |
+| **Status: Warning / Championship** | `--color-warning` (`text-warning`, `bg-warning`) | `#F59E0B` | Status `DRAFT`, Grand Final badge, medali Juara 1, dan peringatan penguncian peserta. |
+| **Status: Danger / Lower Bracket** | `--color-danger` (`text-danger`, `bg-danger`, `border-danger`) | `#EF4444` | Aksi hapus (Danger Zone), pesan error validasi, dan indikator Lower Bracket. |
 
-### 2.5 UI/UX & Frontend Quality Audit (Identifikasi "AI Slop")
+**Aturan Penggunaan Warna (Strict Guardrails)**:
+1. **85% Surface Neutral, 10% Functional Status, 5% Brand Accent**: Warna `accent` (`#F43F5E`) hanya digunakan untuk tindakan utama, state terpilih (`selected`), dan penanda fokus—tidak pernah digunakan sebagai warna latar kartu besar.
+2. **Zero Multi-Stop Neon Gradients**: Dilarang menggunakan gradasi pelangi (`indigo-to-purple-to-pink`). Transisi permukaan hanya menggunakan perbedaan elevasi warna solid (`surface-base` → `surface-raised` → `surface-elevated`) dan border `1px` yang tajam.
+3. **Semantic Bracket Differentiation**:
+   - **Upper Bracket**: Aksen `secondary` (`#38BDF8` Sky/Cyan).
+   - **Lower Bracket**: Aksen `amber`/`rose` (`#FB7185` / `#F59E0B`).
+   - **Grand Final & Champions**: Aksen `warning` (`#F59E0B` Gold).
+   - **Winning Path & Winner Slot**: Aksen `success` (`#10B981` Emerald).
 
-> **Catatan Metodologi Audit Visual**: Audit UI/UX dilakukan melalui inspeksi menyeluruh terhadap seluruh struktur DOM, konfigurasi CSS (`app/globals.css`), dan kelas utilitas Tailwind CSS pada 31 file komponen/halaman `.tsx`. Bukti kode menunjukkan pola visual yang sangat jelas dan konsisten di seluruh aplikasi.
+### 5.3 Typography & Brand Personality (`frontend/app/layout.tsx` & `globals.css`)
 
-#### A. Pola "AI Slop" yang Teridentifikasi di Codebase
-1. **Polusi Dekorasi Blur Blobs & Floating Radial Glows**:
-   Hampir setiap halaman menyisipkan elemen `div` dekoratif berukuran 300px–500px dengan `rounded-full blur-3xl` atau `blur-[100px]`/`blur-[128px]` berwarna ungu, indigo, dan merah muda tanpa fungsi informasi:
-   - `components/landing/hero.tsx` (baris 12–13): Dua bola `w-72 h-72 bg-purple-500 rounded-full blur-[128px]` dan `bg-indigo-500`.
-   - `app/page.tsx` (baris 25–26): Dua bola `w-96 h-96 bg-purple-600/20 rounded-full blur-[100px]`.
-   - `app/dashboard/layout.tsx` (baris 37–38): Dua bola statis `w-[500px] h-[500px] bg-purple-900/20 rounded-full blur-[100px]` yang membayangi seluruh area kerja dashboard.
-   - `app/login/page.tsx`, `app/register/page.tsx`, `app/forgot-password/page.tsx`, `app/update-password/page.tsx`, `app/dashboard/profile/page.tsx`, `app/dashboard/tournaments/[id]/page.tsx`: Semuanya menggunakan kombinasi `radial-gradient` dan bola `blur-3xl` di sudut kartu.
-2. **Penggunaan Gradasi Neon & Efek Glow Berlebihan**:
-   - Judul halaman dan logo terus-menerus memakai `bg-clip-text text-transparent bg-linear-to-r from-indigo-400 via-purple-400 to-indigo-400` (`hero.tsx`, `login/page.tsx`).
-   - Tombol aksi utama tidak memiliki sistem warna semantik yang tenang, melainkan memakai gradasi mencolok yang berbeda-beda di tiap layar:
-     - Ungu-Indigo (`bg-linear-to-r from-indigo-600 to-purple-600 shadow-[0_0_40px_-10px_rgba(79,70,229,0.5)]`) di Landing, Sidebar, Dashboard, dan Create Tournament.
-     - Ungu-Pink (`bg-linear-to-r from-purple-600 to-pink-600`) di `app/register/page.tsx`.
-     - Oranye-Merah (`bg-linear-to-r from-orange-600 to-red-600`) di `generate-button.tsx`.
-     - Hijau-Emerald (`bg-linear-to-r from-green-600 to-emerald-600`) di `advance-button.tsx`.
-     - Emas menyala (`drop-shadow-[0_0_30px_rgba(250,204,21,0.5)]`) di `champions-view.tsx` dan `bracket-visualizer.tsx`.
-3. **Inkonsistensi Palet Permukaan (Surface Token Fragmentation)**:
-   - Mayoritas halaman menggunakan `bg-slate-950` dan `bg-slate-900/40`, namun halaman Profil (`app/dashboard/profile/page.tsx`) serta form `basic-info-form.tsx` dan `security-form.tsx` tiba-tiba menggunakan warna hex *hardcoded* `bg-[#1a1b26]` dan input `bg-[#0f1016]`.
-   - Kartu pada `create-tournament-form.tsx` menggunakan `bg-white/5 border-white/10 backdrop-blur-sm`, sementara kartu di `tournament-settings-form.tsx` menggunakan `bg-slate-900/40`, dan kartu di `participants/page.tsx` menggunakan `bg-slate-800/40`.
-4. **Konflik Tipografi & Font Stack yang Rusak**:
-   - `app/layout.tsx` memuat font `Inter` (`const inter = Inter({ subsets: ["latin"] })`) dan memasangnya sebagai `className` pada `<body>`.
-   - Namun, `app/globals.css` mendefinisikan `--font-sans: var(--font-geist-sans)` (variabel CSS yang tidak pernah dibuat oleh `layout.tsx`) dan pada baris 24 menetapkan `body { font-family: Arial, Helvetica, sans-serif; }` yang secara langsung mengalahkan pengaturan font modern di level CSS global!
-5. **Komposisi Halaman & Komponen yang Menyerupai Template Generatif**:
-   - Penggunaan `rounded-2xl` dan `rounded-3xl` secara berlebihan bahkan untuk kontainer data padat seperti tabel dan kanvas bracket, ditambah efek `hover:scale-105` atau `hover:scale-[1.02]` pada tombol dan kartu form yang membuat UI terasa goyang dan tidak profesional.
-   - Campur aduk Bahasa Indonesia dan Bahasa Inggris dalam satu tampilan yang sama (contoh: di `app/dashboard/tournaments/[id]/layout.tsx` dan `page.tsx`, tab bertuliskan `Overview`, `Bracket & Matches`, `Participants`, `Settings`, `Public Page`, tetapi isi halaman bertuliskan `Total Peserta`, `Dibuat Pada`, `Jadwal Mendatang`, `Perlu Bantuan?`).
-6. **Masalah Usability, Navigasi, dan Responsivitas**:
-   - **Navigasi Turnamen Tanpa Status Aktif**: `app/dashboard/tournaments/[id]/layout.tsx` adalah Server Component yang merender link tab tanpa memeriksa URL aktif, sehingga pengguna tidak tahu sedang berada di tab mana.
-   - **Konektor Bracket Rusak Secara Geometri**: Di `features/bracket/components/bracket-visualizer.tsx` dan `match-card.tsx`, jarak vertikal antar-match di ronde ke-r dihitung dengan `gap: ${Math.pow(2, roundIdx) * 1.5}rem`, sedangkan garis vertikal di `BracketConnector` menggunakan tinggi tetap `h-[calc(100%+2rem)]` dan `h-30`. Pada ronde 2 ke atas, garis konektor putus dan tidak pernah bertemu dengan kartu di ronde berikutnya.
-   - **Dialog Konfirmasi Browser (`window.confirm`)**: Digunakan di 4 aksi destruktif (`DeleteTournamentButton`, `DeleteParticipantButton`, `GenerateBracketButton`, `AdvanceButton`), merusak pengalaman visual dan aksesibilitas.
-   - **Aksesibilitas Modal & Popover**: `BRScoreModal` (`br-score-modal.tsx`) dan `ShareButton` (`share-button.tsx`) menggunakan `div` biasa tanpa atribut `role="dialog"`, `aria-modal="true"`, maupun penguncian fokus keyboard.
+Evaluasi terhadap tipografi saat ini menunjukkan bahwa penggunaan `Inter` untuk seluruh elemen membuat headline hero, nama turnamen, dan header babak terasa datar seperti dokumen kantor biasa. Untuk membangun kepribadian produk kompetisi esports yang kuat sekaligus menjaga keterbacaan tinggi, sistem tipografi dibagi menjadi **3 peran fungsional** (ketiganya berlisensi Open Font License dan dimuat secara optimal melalui `next/font/google` dengan `display: "swap"`):
 
-### 2.6 Daftar Temuan Terverifikasi & Tingkat Keparahan
+1. **Display & Competitive Headlines (`--font-display`: `Space Grotesk`)**:
+   - **Karakter**: Geometris, teknis, tegas, dengan proporsi aperture yang khas untuk judul kompetisi, nama turnamen, header babak bracket (`UPPER BRACKET`, `GRAND FINAL`), dan nama tim pada podium juara.
+   - **Weights**: `600` (SemiBold), `700` (Bold).
+2. **UI & Body Copy (`--font-sans`: `Plus Jakarta Sans`)**:
+   - **Karakter**: Sangat nyaman dibaca untuk teks Bahasa Indonesia pada ukuran kecil (`12px`–`16px`), label form, deskripsi aturan, navigasi, dan nama peserta di dalam tabel/kartu match.
+   - **Weights**: `400` (Regular), `500` (Medium), `600` (SemiBold), `700` (Bold).
+3. **Competitive Numerals, Scores, Seeds & Timers (`--font-mono`: `JetBrains Mono`)**:
+   - **Karakter**: Monospace teknis dengan `font-variant-numeric: tabular-nums` wajib aktif untuk skor pertandingan (`2 - 1`), nomor seed (`#01`), nomor match (`M#04`), statistik klasemen (`MP`, `W`, `D`, `L`, `GD`, `PTS`, `WWCD`, `KILLS`), dan tanggal.
+   - **Weights**: `500` (Medium), `700` (Bold).
 
-| ID Temuan | Lokasi File | Kategori | Keparahan | Ringkasan Masalah & Dampak |
+#### Hierarki & Skala Tipografi Responsif
+| Level / Elemen | Font Family | Ukuran & Responsif | Weight & Line-Height | Letter Spacing |
 | :--- | :--- | :--- | :--- | :--- |
-| **AUD-SEC-01** | `features/bracket/actions/bracket-actions.ts`, `match-actions.ts`, `stage-actions.ts`, `features/participants/actions/participant-actions.ts` | Security / Authz | **CRITICAL** | Tidak ada validasi sesi (`getUser`) dan kepemilikan (`owner_id`) pada mutasi bracket, skor match, nama peserta, dan progresi stage (IDOR penuh). |
-| **AUD-SEC-02** | `features/tournaments/actions/delete-actions.ts` | Security / Data Integrity | **CRITICAL** | `deleteTournament` menghapus `matches`, `stages`, dan `participants` sebelum memverifikasi `owner_id` pada tabel `tournaments`. |
-| **AUD-SEC-03** | `app/login/page.tsx` | Security / Privacy | **HIGH** | Query langsung dari browser ke tabel `profiles` berdasarkan `username` mengekspos email pengguna tanpa autentikasi (*user enumeration*). |
-| **AUD-SEC-04** | `app/auth/callback/route.ts` | Security | **MEDIUM** | Parameter query `next` dipakai langsung dalam URL redirect tanpa validasi *relative path* (celah *Open Redirect*). |
-| **AUD-BUG-01** | `features/bracket/generators/double-elimination.ts`, `features/bracket/services/progression-service.ts` | Business Logic | **CRITICAL** | Match BYE di Round 1 Double Elimination tidak memajukan pemenang ke Round 2 dan membiarkan LB Round 1 macet; rumus `targetLBRound` dan `targetMatchNum` salah memetakan *loser* WB Round 2+. |
-| **AUD-BUG-02** | `features/bracket/actions/stage-actions.ts` | Business Logic | **CRITICAL** | `advanceToKnockoutAction` untuk `SINGLE_ELIMINATION` pada format `HYBRID_UCL` hanya membuat match Round 1 tanpa Semifinal/Final dan tanpa `next_match_id`. |
-| **AUD-BUG-03** | `app/dashboard/tournaments/[id]/standings/page.tsx` | Functional Bug | **HIGH** | Query menggunakan nama kolom fiktif (`player1_id`, `player2_id`, `player1_score`, `player2_score`) yang tidak ada di tabel `matches`. |
-| **AUD-BUG-04** | `features/bracket/components/league-match-card.tsx`, `next.config.ts` | Type Safety / Bug | **HIGH** | `LeagueMatchCard` merender `ScoreModal` tanpa prop wajib `allParticipants`; error disembunyikan oleh `typescript: { ignoreBuildErrors: true }`. |
-| **AUD-BUG-05** | `features/bracket/actions/match-actions.ts` | Business Logic | **HIGH** | Mengedit skor match yang sudah `COMPLETED` tidak me-reset/memperbarui peserta yang sudah terlanjur maju ke match berikutnya atau turun ke Lower Bracket; skor seri menyimpan status ilegal `"IN_PROGRESS"`. |
-| **AUD-BUG-06** | `features/tournaments/components/create-tournament-form.tsx`, `features/bracket/**` | Feature Gap | **MEDIUM** | Konfigurasi `bestOf`, `homeAway`, dan `pointsPerWin` disimpan di database tetapi diabaikan sepenuhnya oleh generator jadwal dan kalkulasi poin. |
-| **AUD-BUG-07** | `features/bracket/components/champions-view.tsx`, `app/dashboard/tournaments/[id]/layout.tsx`, `app/dashboard/page.tsx` | Functional / UI Bug | **MEDIUM** | `ChampionsView` tidak pernah dirender untuk Liga & Battle Royale; header turnamen menampilkan UUID `game_id` mentah; kartu "Jadwal Mendatang" di dashboard bernilai statis `0`. |
-| **AUD-DB-01** | `types/database.ts`, `features/*/actions/*.ts` | Database | **HIGH** | Tidak ada file migrasi SQL di repo; mutasi multi-langkah dijalankan tanpa transaksi database; kolom JSONB `matches.scores` dioverload untuk data relasional Battle Royale. |
-| **AUD-ARCH-01** | `package.json`, `components/providers/app-providers.tsx` | Architecture / Deps | **MEDIUM** | Dependency `"latest"` tidak terkunci; `@types/react` v18 tidak cocok dengan React 19; `@tanstack/react-query` dipasang tetapi tidak pernah digunakan. |
-| **AUD-UX-01** | `app/globals.css`, `app/**`, `components/**`, `features/**/components/**` | UI/UX Design | **HIGH** | Desain penuh dekorasi *AI slop* (glowing blur blobs, tombol gradasi warna-warni, konflik warna `#1a1b26` vs `slate`, konflik font `Arial` vs `Inter`, konektor bracket putus, dan `window.confirm`). |
+| **Hero Display Title** | `var(--font-display)` | `text-3xl sm:text-5xl lg:text-[56px]` | `font-bold leading-[1.08]` | `tracking-[-0.03em]` |
+| **Page Title (`H1`)** | `var(--font-display)` | `text-2xl md:text-3xl` | `font-bold leading-tight` | `tracking-[-0.02em]` |
+| **Section / Modal Header (`H2`)** | `var(--font-display)` | `text-lg md:text-xl` | `font-semibold leading-snug` | `tracking-[-0.015em]` |
+| **Card / Group Title (`H3`)** | `var(--font-sans)` | `text-sm md:text-base` | `font-semibold leading-normal` | `tracking-normal` |
+| **Body Copy** | `var(--font-sans)` | `text-sm` (`14px`) | `font-normal leading-relaxed` (`1.6`) | `tracking-normal` |
+| **Compact UI / Table Cell** | `var(--font-sans)` | `text-xs` (`12px`) | `font-medium leading-normal` | `tracking-normal` |
+| **Numeric Score / Points** | `var(--font-mono)` | `text-sm` s/d `text-2xl` | `font-bold tabular-nums` | `tracking-tight` |
+| **Technical Micro-Label / Seed** | `var(--font-mono)` | `text-[11px]` | `font-semibold uppercase` | `tracking-[0.06em]` |
 
-## 3. Target Architecture
+## 6. Global AI-Slop Removal Strategy
 
-### 3.1 Arsitektur Target: Next.js + Go (Modular Monolith) + PostgreSQL
-Berdasarkan skala produk dan kompleksitas domain turnamen Gridify, arsitektur target menggunakan pola **Modular Monolith Backend dalam Go** yang berkomunikasi dengan **Next.js Presentation Layer** dan **PostgreSQL 17 baru yang murni** sebagai satu-satunya pusat penyimpanan data (*single relational datastore*). Pendekatan *microservices* sengaja dihindari karena seluruh domain (`auth`, `tournaments`, `participants`, `stages`, `matches`, `standings`, `realtime`) membutuhkan konsistensi transaksi ACID yang kuat pada tabel yang saling berelasi erat.
+Seluruh halaman telah diaudit untuk memisahkan **dekorasi AI-slop yang harus dihapus/dirombak** dari **indikator fungsional yang wajib dipertahankan**.
 
-```mermaid
-flowchart TB
-    subgraph Client["Browser (Organizer & Public Spectator)"]
-        UI["Next.js Client Components\n(Forms, Interactive Bracket SVG, Score Modal)"]
-        SSEClient["Realtime Hook (EventSource SSE)"]
-    end
+### 6.1 Elemen AI-Slop yang Wajib Dihapus atau Didesain Ulang
 
-    subgraph NextServer["Frontend Tier — Next.js 16 (App Router)"]
-        RSC["Server Components (SSR / Dynamic Pages)"]
-        BFF["Typed API Client & Auth Cookie Forwarder"]
-        Proxy["proxy.ts (Route Guard & Session Check)"]
-    end
-
-    subgraph GoBackend["Backend Tier — Go 1.24 Modular Monolith"]
-        Router["HTTP Router (chi / net/http) & Middleware\n(CORS, Auth Session/JWT, Rate Limit, RequestID, Slog)"]
-        
-        subgraph Modules["Domain Services (Clean Architecture)"]
-            AuthSvc["Auth & User Service\n(Argon2id, Session Management)"]
-            TourneySvc["Tournament & Participant Service\n(CRUD, Ownership Guard, Lock Rules)"]
-            BracketEngine["Bracket & Progression Engine\n(SE, DE, Round Robin, Hybrid UCL, BR)"]
-            StandingsSvc["Standings & Leaderboard Calculator\n(League & Battle Royale Points Engine)"]
-            RealtimeHub["SSE Broker Hub\n(Per-Tournament Event Channels)"]
-        end
-
-        Repo["Repository Layer (pgx/v5 + Transactional Unit of Work)"]
-    end
-
-    subgraph Database["Database Tier — Greenfield PostgreSQL 17"]
-        PG[("PostgreSQL 17\nPure Normalized Schema + ACID Transactions")]
-    end
-
-    UI -->|Form Submit / Fetch| BFF
-    RSC -->|Server-to-Server Fetch| BFF
-    Proxy -->|Validate Session Cookie| Router
-    BFF -->|REST JSON /api/v1/*| Router
-    SSEClient -->|GET /api/v1/public/tournaments/:id/stream| RealtimeHub
-    Router --> AuthSvc
-    Router --> TourneySvc
-    Router --> BracketEngine
-    Router --> StandingsSvc
-    AuthSvc --> Repo
-    TourneySvc --> Repo
-    BracketEngine --> Repo
-    StandingsSvc --> Repo
-    BracketEngine -->|Publish Update Event| RealtimeHub
-    TourneySvc -->|Publish Update Event| RealtimeHub
-    Repo -->|pgxpool Connection Pool| PG
-```
-
-### 3.2 Pembagian Tanggung Jawab Antar-Layer
-
-| Layer | Tanggung Jawab Utama (Wajib) | Hal yang Dilarang (Anti-Patterns) |
+| Lokasi File & Baris | Pola AI-Slop Saat Ini | Tindakan Perbaikan |
 | :--- | :--- | :--- |
-| **Frontend (Next.js 16 App Router)** | - Merender halaman publik (`/`, `/t/[id]`) dan dashboard (`/dashboard/**`).<br>- Mengelola state UI lokal (modal buka/tutup, filter tab, transisi halaman, pan/zoom kanvas bracket).<br>- Validasi form sisi klien (*UX validation*) menggunakan `zod` untuk umpan balik cepat.<br>- Mengonsumsi REST API Go melalui HTTP client terpusat dan mendengarkan stream SSE untuk pembaruan langsung. | - **Dilarang** mengakses database PostgreSQL secara langsung.<br>- **Dilarang** menghitung poin klasemen, menentukan pemenang match, atau menjalankan algoritma seeding/bracket di kode frontend.<br>- **Dilarang** menyimpan logika otorisasi kepemilikan hanya di komponen UI. |
-| **Backend (Go 1.24 Modular Monolith)** | - Menangani registrasi, login (email atau username secara aman di server), logout, reset password, dan manajemen sesi.<br>- Memvalidasi setiap request dan menegakkan otorisasi kepemilikan (`owner_id`) di level service/middleware.<br>- Mengeksekusi algoritma generator bracket (Single Elim, Double Elim, Round Robin, Hybrid UCL, Battle Royale) dan progresi match secara atomik di dalam transaksi database.<br>- Menghitung klasemen Liga dan Leaderboard Battle Royale berdasarkan konfigurasi turnamen.<br>- Memancarkan event perubahan turnamen melalui *Server-Sent Events (SSE)*. | - **Dilarang** membocorkan error SQL mentah (`pgconn.PgError`) ke klien.<br>- **Dilarang** menempatkan query SQL di dalam HTTP handler.<br>- **Dilarang** mengeksekusi mutasi multi-tabel (seperti generate bracket atau update skor + advance winner) di luar transaksi database. |
-| **Database (PostgreSQL 17)** | - Menjaga integritas referensial melalui `FOREIGN KEY`, `UNIQUE`, `NOT NULL`, dan `CHECK` constraints.<br>- Menjalankan *cascading delete* yang aman sesuai hierarki entitas (`tournaments` → `stages` → `matches` → `battle_royale_match_results`).<br>- Menyediakan indeks optimal untuk pencarian turnamen, urutan match per ronde, dan agregasi hasil Battle Royale. | - **Dilarang** menyimpan data relasional utama (seperti daftar hasil tim per game Battle Royale) sebagai blob JSONB tanpa skema.<br>- **Dilarang** mengubah struktur tabel secara manual di luar file migrasi terversi. |
+| `frontend/components/landing/hero.tsx:13-21` | Badge kapsul dekoratif `<Activity /> Arsitektur Baru: Next.js 16 + Go + Realtime SSE` di atas judul utama. | **Hapus total.** Pengguna akhir (penyelenggara turnamen & pemain) tidak peduli pada framework internal. Ganti konteks bagian atas hero dengan penanda domain fungsional atau langsung masuk ke komposisi tipografi & showcase cabang game. |
+| `frontend/app/page.tsx:31-34` | Pill kapsul `<Trophy /> SIAP MEMULAI KOMPETISI` di atas CTA bawah disertai heading `font-black` generik. | **Hapus pill dekoratif** dan ubah seksi CTA bawah menjadi *command bar* horizontal yang ringkas dan terstruktur (judul tegas di kiri, metrik dukungan 5 format & 10 game, serta tombol aksi di kanan). |
+| `frontend/components/landing/features.tsx:13-85` | Grid 6 kartu identik (`rounded-xl` + kotak ikon `w-10 h-10` + judul + deskripsi) yang menyebutkan istilah internal seperti `"Go engine"`, `"transaksi PostgreSQL 17"`, dan `"owner_id"`, ditambah animasi `whileInView` berulang. | **Desain ulang menjadi Architectural Bento Showcase (3–4 Panel Fungsional)** yang berorientasi pada manfaat penyelenggara turnamen (1. *Multi-Format Bracket Engine*, 2. *Automated League & Battle Royale Scoring*, 3. *Instant Public Spectator & QR Broadcast*) tanpa menyebut `PostgreSQL 17` atau `owner_id`. |
+| `frontend/components/landing/how-it-works.tsx:36-55` | 3 kartu langkah simetris dengan kotak angka `01`, `02`, `03` di tengah (`items-center text-center`) dan animasi Framer Motion berulang. | **Ubah menjadi Horizontal Operational Timeline / Workflow Strip** dengan orientasi rata kiri (*left-aligned*), garis penghubung langkah yang tegas, dan contoh output nyata di setiap tahap. |
+| `frontend/app/(public)/t/[id]/page.tsx:108-154` | Banner penonton tengah dengan pill `<Trophy /> SPECTATOR LIVE VIEW` dan 4 kapsul info terpisah yang memakan ruang vertikal terlalu besar sebelum penonton bisa melihat bagan. | **Desain ulang menjadi Compact Tournament Broadcast Header**: satukan judul turnamen, badge nama game, status kompetisi, jumlah peserta, dan indikator koneksi `LIVE` ke dalam satu header bar yang padat sehingga bagan pertandingan langsung terlihat di paruh atas layar (*above the fold*). |
+| `frontend/features/bracket/components/champions-view.tsx:75-78` | Pill `<Trophy /> PODIUM JUARA TURNAMEN` dan blok bar vertikal kosong bertuliskan angka `2`, `1`, `3` besar yang memakan tinggi 320px di atas bagan. | **Desain ulang menjadi Compact Championship Banner** horizontal 3-kolom (Gold 1st di tengah/utama, Silver 2nd, Bronze 3rd) yang elegan, padat, dan tidak mendorong bagan pertandingan terlalu jauh ke bawah. |
+| `frontend/components/providers/tournament/realtime-listener.tsx:14-38` | Pill mengambang `fixed bottom-4 right-4 z-50` (`"SSE REALTIME"` / `"CONNECTING SSE..."`) yang menutupi konten kanan bawah layar. | **Ubah dari Floating Overlay menjadi Inline Status Indicator** (atau kembalikan status koneksi dari hook `useTournamentSSE` untuk ditampilkan secara elegan di bagian header halaman bracket & halaman publik sebagai badge `LIVE` / `MENYAMBUNGKAN...`). |
+| `frontend/features/bracket/components/br-group-list.tsx:11-50` | Masih menggunakan kelas warna lama (`bg-indigo-500/10`, `text-indigo-400`, `bg-slate-900/50`, `border-slate-800`) dan teks bahasa Inggris (`Group Distribution`, `Teams`). | **Selaraskan ke sistem token baru** (`bg-surface-raised`, `border-border-default`, `text-secondary`) dan Bahasa Indonesia konsisten (`Distribusi Grup Lobby`, `{n} Tim`). |
 
-### 3.3 Spesifikasi Kontrak API & Alur Autentikasi
+### 6.2 Elemen Fungsional yang Wajib Dipertahankan & Diperkuat
+- **Badge Status Turnamen (`DRAFT`, `ONGOING`, `COMPLETED`)** dan **Status Match (`SCHEDULED`, `ONGOING`, `COMPLETED`/`FINAL`)**: Dipertahankan karena memberikan informasi operasional penting.
+- **Indikator Lolos (`Q`) dan Peringkat (`#1`, `#2`, `#3`)** pada `StandingsTable` dan `BRLeaderboard`: Dipertahankan dan diperbaiki logikanya.
+- **Nomor Seed (`#1`..`#N`) dan Nomor Match (`M#1`)**: Dipertahankan dan diperkuat di dalam `MatchCard`.
 
-#### A. Alur Autentikasi & Sesi
-Menggantikan Supabase Auth dengan autentikasi native di backend Go yang aman dan mandiri:
-1. **Login / Register**: Klien mengirim kredensial ke `POST /api/v1/auth/login` (mendukung input `identifier` berupa email atau username—resolusi username dilakukan secara internal di Go sehingga tidak ada kebocoran email ke publik).
-2. **Session Token & Cookie**: Backend Go memverifikasi password menggunakan **Argon2id**, membuat baris sesi di tabel `user_sessions` (menyimpan hash token SHA-256, `user_id`, `user_agent`, `ip_address`, `expires_at`), dan mengirimkan `Set-Cookie: gridify_session=<token>; HttpOnly; Secure; SameSite=Lax; Path=/`.
-3. **Server-Side Fetching di Next.js**: Saat Next.js Server Component melakukan *fetch* ke backend Go, Next.js meneruskan header `Cookie` dari request masuk. Untuk mutasi dari Client Component, request dikirim melalui Next.js Route Handler proxy (`/api/v1/[...path]`) atau langsung ke Go API pada domain yang sama dengan `credentials: "include"`.
-4. **Password Reset Flow**: `POST /api/v1/auth/forgot-password` menghasilkan token acak kriptografis (disimpan sebagai SHA-256 hash di tabel `password_reset_tokens` dengan masa berlaku 30 menit) dan mengirimkannya melalui layanan SMTP/Email yang dikonfigurasi. `POST /api/v1/auth/reset-password` memverifikasi token, memperbarui hash password Argon2id, dan mencabut seluruh sesi lama pengguna.
+## 7. Bracket Connector Implementation Plan
 
-#### B. Standar Format Response & Error
-Seluruh endpoint Go menggunakan amplop JSON yang konsisten:
-- **Success Response (`200 OK`, `201 Created`)**:
-  ```json
-  {
-    "success": true,
-    "data": { ... },
-    "meta": {
-      "page": 1,
-      "per_page": 20,
-      "total": 42
-    }
-  }
-  ```
-- **Error Response (`400`, `401`, `403`, `404`, `409`, `422`, `500`)**:
-  ```json
-  {
-    "success": false,
-    "error": {
-      "code": "TOURNAMENT_LOCKED",
-      "message": "Peserta tidak dapat diubah karena turnamen sedang berlangsung.",
-      "fields": {
-        "title": "Nama turnamen minimal 3 karakter"
-      },
-      "request_id": "req_01J9XYZ..."
-    }
-  }
-  ```
+### 7.1 Audit Struktur Data Pertandingan & Progresi Aktual
+Berdasarkan pemeriksaan `migrations/000001_init_schema.up.sql:167-208`, `backend/internal/service/bracket/single_elim.go`, dan `backend/internal/service/bracket/double_elim.go`, struktur data pertandingan yang dikirim oleh backend Go ke frontend memiliki karakteristik pasti berikut:
 
-#### C. Daftar Endpoint Utama (`/api/v1`)
-| Grup Domain | Method & Path | Auth | Deskripsi Tanggung Jawab |
-| :--- | :--- | :--- | :--- |
-| **Health & System** | `GET /healthz`, `GET /readyz` | Public | Pemeriksaan liveness proses Go dan konektivitas pool PostgreSQL. |
-| **Auth & Profile** | `POST /api/v1/auth/register` | Public | Registrasi akun baru (validasi email & username unik, hash Argon2id). |
-| **Auth & Profile** | `POST /api/v1/auth/login` | Public | Login dengan email atau username; menerbitkan HttpOnly session cookie. |
-| **Auth & Profile** | `POST /api/v1/auth/logout` | User | Mencabut sesi di database dan menghapus cookie. |
-| **Auth & Profile** | `POST /api/v1/auth/forgot-password` | Public | Membuat token reset password dengan rate-limiting ketat. |
-| **Auth & Profile** | `POST /api/v1/auth/reset-password` | Public | Mengatur password baru menggunakan token reset yang valid. |
-| **Auth & Profile** | `GET /api/v1/users/me` | User | Mengambil profil pengguna yang sedang login. |
-| **Auth & Profile** | `PATCH /api/v1/users/me` | User | Memperbarui `first_name`, `last_name`, `phone`, dan `username`. |
-| **Auth & Profile** | `POST /api/v1/users/me/password` | User | Mengubah password langsung dari halaman profil (wajib verifikasi `current_password`). |
-| **Master Data** | `GET /api/v1/games` | Public | Mengambil daftar game beserta `genre` dan `platform`. |
-| **Dashboard** | `GET /api/v1/dashboard/summary` | User | Mengambil metrik `total_tournaments`, `active_tournaments`, `upcoming_matches_count` (riil, bukan `0`), dan 4 turnamen terbaru. |
-| **Tournaments** | `GET /api/v1/tournaments` | User | Daftar turnamen milik pengguna dengan filter `q`, `status`, dan paginasi. |
-| **Tournaments** | `POST /api/v1/tournaments` | User | Membuat turnamen beserta `stages` awal dalam satu transaksi database. |
-| **Tournaments** | `GET /api/v1/tournaments/:id` | User (Owner) | Detail turnamen lengkap untuk dashboard (termasuk nama game, stages, statistik peserta, dan jadwal mendatang). |
-| **Tournaments** | `PATCH /api/v1/tournaments/:id` | User (Owner) | Memperbarui judul, deskripsi, status, dan konfigurasi `settings` turnamen. |
-| **Tournaments** | `DELETE /api/v1/tournaments/:id` | User (Owner) | Menghapus turnamen milik pengguna secara atomik (`ON DELETE CASCADE`). |
-| **Participants** | `GET /api/v1/tournaments/:id/participants` | Public / Owner | Mengambil daftar peserta turnamen (diurutkan berdasarkan `seed_number` / `created_at`). |
-| **Participants** | `POST /api/v1/tournaments/:id/participants` | User (Owner) | Menambah peserta (ditolak dengan `409 Conflict` jika status turnamen bukan `DRAFT`). |
-| **Participants** | `PATCH /api/v1/tournaments/:id/participants/:pid` | User (Owner) | Mengubah nama, info kontak, status verifikasi, atau `seed_number` peserta. |
-| **Participants** | `DELETE /api/v1/tournaments/:id/participants/:pid` | User (Owner) | Menghapus peserta (hanya diizinkan saat `DRAFT` atau membersihkan slot match secara transaksional). |
-| **Brackets & Stages** | `POST /api/v1/tournaments/:id/stages/:stageId/generate` | User (Owner) | Menghasilkan/mereset bracket atau jadwal pertandingan untuk stage terkait di dalam transaksi ACID. |
-| **Brackets & Stages** | `POST /api/v1/tournaments/:id/stages/:stageId/advance` | User (Owner) | Menghitung klasemen akhir Group Stage (`HYBRID_UCL`) dan men-generate bracket Knockout lengkap (baik Single maupun Double Elimination). |
-| **Brackets & Stages** | `GET /api/v1/tournaments/:id/stages/:stageId/view` | Public / Owner | Mengambil data terstruktur untuk stage aktif: daftar match (dikelompokkan per bracket/ronde), **klasemen terhitung**, dan **data juara (`champions`)** untuk semua format. |
-| **Matches** | `PATCH /api/v1/tournaments/:id/matches/:matchId/score` | User (Owner) | Memperbarui skor match head-to-head, memvalidasi aturan `best_of` / seri, dan menjalankan progresi pemenang/kalah (termasuk koreksi rekursif yang aman jika match belum berlanjut). |
-| **Matches** | `PUT /api/v1/tournaments/:id/matches/:matchId/br-results` | User (Owner) | Menyimpan hasil placement & kills Battle Royale ke tabel `battle_royale_match_results` dan menghitung poin berdasarkan konfigurasi turnamen. |
-| **Matches** | `PATCH /api/v1/tournaments/:id/matches/:matchId/slot` | User (Owner) | Mengubah peserta pada slot A atau B secara manual (khusus koreksi admin). |
-| **Public & Realtime** | `GET /api/v1/public/tournaments/:id` | Public | Endpoint publik cepat untuk halaman penonton `/t/[id]`. |
-| **Public & Realtime** | `GET /api/v1/public/tournaments/:id/stream` | Public | Endpoint *Server-Sent Events (SSE)* yang memancarkan event `match_updated`, `participant_updated`, dan `stage_updated`. |
+1. **Identifikasi Seksi Bracket (`bracket_type`) & Nomor Babak (`round_number`)**:
+   - **Single Elimination (`single_elim.go`)**:
+     - Pohon utama memiliki `bracket_type = 'UPPER'` dan `round_number = 1 .. totalRounds` (di mana `totalRounds = log2(bracketSize)`).
+     - Jika `has_third_place = true` dan `totalRounds >= 2`, terdapat 1 match tambahan dengan `bracket_type = 'THIRD_PLACE'`, `round_number = totalRounds`, `match_number = 1`.
+   - **Double Elimination (`double_elim.go`)**:
+     - **Upper Bracket**: `bracket_type = 'UPPER'`, `round_number = 1 .. totalWBRounds`. Jumlah match pada babak $r$ adalah $\text{bracketSize} / 2^r$.
+     - **Lower Bracket**: `bracket_type = 'LOWER'`, `round_number = 1 .. totalLBRounds` (di mana $\text{totalLBRounds} = 2 \times (\text{totalWBRounds} - 1)$). Jumlah match pada babak $r$ mengikuti fungsi `lbMatchCount(bracketSize, r)`:
+       - Babak ganjil $r = 1, 3, 5\dots$ (*Consolidation Rounds*): Mempertemukan sesama pemenang Lower Bracket (atau loser WB R1 pada LB R1).
+       - Babak genap $r = 2, 4, 6\dots$ (*Drop-Down Rounds*): Mempertemukan pemenang LB babak $(r-1)$ di **Slot A** melawan tim yang kalah (*drop-down*) dari Upper Bracket babak $(r/2 + 1)$ di **Slot B**. Jumlah match pada babak genap $r$ **sama persis** dengan babak ganjil $(r-1)$!
+     - **Grand Final**: `bracket_type = 'GRAND_FINAL'`, `round_number = 1`, `match_number = 1`. Menerima pemenang Final Upper Bracket di **Slot A** (`next_match_slot = 'A'`) dan pemenang Final Lower Bracket di **Slot B** (`next_match_slot = 'B'`).
+2. **Relasi Konektor Eksplisit pada Setiap Match**:
+   - Setiap objek `Match` dari Go API memiliki:
+     - `next_match_id?: string` (UUID pertandingan tujuan bagi pemenang).
+     - `next_match_slot?: 'A' | 'B'` (Slot tujuan pada kartu target: `'A'` = baris peserta atas, `'B'` = baris peserta bawah).
+     - `loser_next_match_id?: string` dan `loser_next_match_slot?: 'A' | 'B'` (Tujuan bagi tim yang kalah di Upper Bracket atau Semifinal Single Elimination).
+     - `is_bye: boolean` (Menandakan pertandingan BYE di Babak 1 yang otomatis selesai tanpa dimainkan).
 
-## 4. Target Directory Structure
+### 7.2 Mengapa Implementasi `BracketVisualizer` Saat Ini Gagal
+1. **Kesalahan Filter `bracket_type`**: `bracket-visualizer.tsx:32-36` memfilter berdasarkan `m.round_number < 0` dan `m.round_number === 999`, sehingga seluruh match `LOWER`, `GRAND_FINAL`, dan `THIRD_PLACE` masuk ke `upperMatches` dan merusak struktur kolom maupun garis konektor.
+2. **Variabel CSS Stroke Tidak Terdefinisi**: `stroke="var(--color-border-default)"` tidak dikenali sehingga `<path>` SVG tidak terlihat.
+3. **Titik Masuk Konektor Tidak Membedakan Slot A dan Slot B**: Semua garis masuk ke titik tengah vertikal kartu target (`tRect.top + tRect.height / 2`), sehingga garis dari Match 1 (Slot A) dan Match 2 (Slot B) bertumpuk di satu titik yang sama dan tidak menunjuk ke baris peserta masing-masing.
+4. **Tidak Ada Visualisasi Asal Drop-Down (Upper → Lower / Bronze)**: Pada Double Elimination (di mana LB babak genap memiliki jumlah match yang sama dengan LB babak ganjil di sebelah kirinya, dan Slot B diisi oleh tim yang turun dari Upper Bracket) serta Bronze Match, pengguna tidak melihat indikator dari mana peserta Slot B berasal.
 
-Proyek direstrukturisasi menjadi repositori terpadu (*monorepo layout*) yang memisahkan aplikasi frontend Next.js, backend Go, file migrasi SQL murni, dan kontrak API OpenAPI secara bersih:
+### 7.3 Spesifikasi Arsitektur Konektor Bracket Baru (`features/bracket/components/bracket-visualizer.tsx` & `match-card.tsx`)
 
-```text
-gridify/
-  - IMPLEMENTATION_PLAN.md                 # Dokumen rencana eksekusi utama ini
-  - Makefile                               # Perintah standar (dev, build, test, migrate, seed, lint)
-  - docker-compose.yml                     # Orkestrasi lokal PostgreSQL 17, Go API, dan Next.js
-  - .env.example                           # Template variabel environment terpadu
-  - contracts/
-      - openapi.yaml                       # Spesifikasi kontrak REST API OpenAPI 3.1
-  - migrations/                            # File migrasi SQL berurutan (golang-migrate)
-      - 000001_init_schema.up.sql          # Skema relasional murni PostgreSQL 17
-      - 000001_init_schema.down.sql
-      - 000002_seed_games.up.sql           # Seed master data game (MOBA, FPS, SPORTS, BR)
-      - 000002_seed_games.down.sql
-  - backend/                               # Layanan Backend Go (Golang 1.24+)
-      - go.mod
-      - go.sum
-      - cmd/
-          - api/
-              - main.go                    # Entry point HTTP server Go
-          - seed/
-              - main.go                    # CLI seeder untuk membuat akun & sampel turnamen dev/uji
-      - internal/
-          - config/
-              - config.go                  # Pemuatan & validasi env vars (DB DSN, CORS, Session Secret)
-          - database/
-              - postgres.go                # Konfigurasi pgxpool & health check
-              - tx.go                      # Helper Transactional Unit of Work (WithTx)
-          - domain/                        # Entitas domain, value objects, dan error standar
-              - errors.go
-              - user.go
-              - tournament.go
-              - bracket.go
-              - standings.go
-          - repository/                    # Implementasi akses data PostgreSQL (pgx)
-              - user_repo.go
-              - game_repo.go
-              - tournament_repo.go
-              - participant_repo.go
-              - stage_repo.go
-              - match_repo.go
-          - service/                       # Pusat seluruh Business Logic
-              - auth_service.go
-              - tournament_service.go
-              - participant_service.go
-              - standings_service.go       # Kalkulator klasemen Liga & Battle Royale
-              - bracket/                   # Mesin algoritma turnamen (teruji unit test)
-                  - math.go                # Power of two, standard seeding, group distribution
-                  - single_elim.go         # Generator Single Elimination + Bronze match
-                  - double_elim.go         # Generator Double Elimination (dengan fix BYE & LB)
-                  - round_robin.go         # Generator Circle Method (1-leg & 2-leg Home/Away)
-                  - battle_royale.go       # Generator rotasi grup Battle Royale
-                  - progression.go         # Mesin progresi match, drop-down LB, & koreksi skor
-                  - bracket_test.go        # Unit tests komprehensif untuk seluruh format
-          - realtime/
-              - hub.go                     # Broker Server-Sent Events (SSE) per turnamen
-          - transport/
-              - http/
-                  - router.go              # Registrasi route & middleware chain
-                  - response.go            # Standardisasi JSON response & error mapping
-                  - middleware/
-                      - auth.go            # Validasi session cookie & injeksi UserContext
-                      - ratelimit.go       # Rate limiter per IP untuk endpoint publik/auth
-                      - logging.go         # Structured logging (log/slog) & Request ID
-                  - handler/
-                      - auth_handler.go
-                      - user_handler.go
-                      - tournament_handler.go
-                      - participant_handler.go
-                      - bracket_handler.go
-                      - match_handler.go
-                      - public_handler.go
-  - frontend/                              # Presentation Layer — Next.js 16 App Router
-      - package.json
-      - tsconfig.json
-      - next.config.ts                     # typescript.ignoreBuildErrors = false (strict!)
-      - postcss.config.mjs
-      - proxy.ts                           # Proteksi route berdasarkan keberadaan sesi valid
-      - app/
-          - globals.css                    # Design tokens CSS variables (Obsidian/Zinc theme)
-          - layout.tsx                     # Font Geist Sans & Geist Mono terkonfigurasi benar
-          - page.tsx                       # Landing page bersih (Product-driven, tanpa blur blobs)
-          - (auth)/
-              - login/page.tsx
-              - register/page.tsx
-              - forgot-password/page.tsx
-              - reset-password/page.tsx
-          - (public)/
-              - t/[id]/page.tsx            # Halaman publik penonton (SSR + SSE Realtime)
-          - dashboard/
-              - layout.tsx                 # App shell profesional dengan breadcrumb & active state
-              - page.tsx                   # Overview dengan metrik jadwal mendatang aktual
-              - create/page.tsx
-              - profile/page.tsx
-              - tournaments/
-                  - page.tsx
-                  - [id]/
-                      - layout.tsx         # Header turnamen (menampilkan nama game & tab aktif)
-                      - page.tsx           # Ringkasan turnamen & antrean match aktif
-                      - bracket/page.tsx   # Kanvas bracket / klasemen / Battle Royale
-                      - participants/page.tsx
-                      - settings/page.tsx
-      - components/
-          - ui/                            # Komponen dasar konsisten (Button, Input, Select, Dialog, ConfirmModal, Badge, Table, EmptyState, Skeleton)
-          - layout/                        # Sidebar, Topbar, TournamentTabNav (Client active state)
-          - landing/                       # Komponen landing page baru dengan pratinjau produk nyata
-      - features/
-          - auth/components/
-          - tournaments/components/
-          - participants/components/       # Termasuk EditParticipantModal & Seed Reordering
-          - bracket/components/            # Termasuk SVG Bracket Connectors & Unified ChampionsPodium
-      - hooks/
-          - use-tournament-sse.ts          # Pengganti use-tournament-realtime.ts (SSE EventSource)
-      - lib/
-          - api-client.ts                  # Typed HTTP wrapper ke Go API (server & client safe)
-          - utils.ts
-      - types/
-          - api.ts                         # Tipe DTO yang selaras dengan contracts/openapi.yaml
+```
+[Match R1 #1] (Exit Right Center) ──┐
+                                    ├──► (Entry Slot A Row) [Match R2 #1]
+[Match R1 #2] (Exit Right Center) ──┘    (Entry Slot B Row)
 ```
 
-## 5. Feature Inventory & Gap Analysis
+1. **Pemisahan Seksi Berdasarkan `bracket_type` yang Akurat**:
+   - `upperMatches = matches.filter((m) => m.bracket_type === 'UPPER')`
+   - `lowerMatches = matches.filter((m) => m.bracket_type === 'LOWER')`
+   - `grandFinalMatches = matches.filter((m) => m.bracket_type === 'GRAND_FINAL')`
+   - `thirdPlaceMatches = matches.filter((m) => m.bracket_type === 'THIRD_PLACE')`
+   - Kelompokkan `upperMatches` dan `lowerMatches` berdasarkan `m.round_number` secara berurutan (`1, 2, ...`) dan urutkan setiap babak berdasarkan `m.match_number` (`1, 2, ...`).
+   - Tempatkan `thirdPlaceMatches` (Perebutan Juara 3) pada panel khusus di bawah kartu Final Upper Bracket pada kolom babak terakhir Single Elimination, lengkap dengan label badge `"BRONZE MATCH • JUARA 3"`.
+2. **Anchor DOM Presisi untuk Slot A dan Slot B pada `MatchCard`**:
+   - Tambahkan atribut data/ID pada baris peserta di dalam `MatchCard`:
+     - Elemen kartu utama: `id={`match-card-${match.id}`}`
+     - Baris Peserta A: `id={`match-slot-a-${match.id}`}`
+     - Baris Peserta B: `id={`match-slot-b-${match.id}`}`
+   - Dengan anchor ini, fungsi kalkulasi konektor SVG menghitung:
+     - **Titik Keluar (`x1, y1`)**: Sisi kanan tengah dari `match-card-${m.id}` (atau titik tengah antara baris peserta A dan B).
+     - **Titik Masuk (`x2, y2`)**: Sisi kiri tengah dari `match-slot-a-${m.next_match_id}` jika `m.next_match_slot === 'A'`, atau `match-slot-b-${m.next_match_id}` jika `m.next_match_slot === 'B'` (dengan fallback ke titik tengah kartu jika `next_match_slot` kosong).
+     - Hasilnya: Garis dari pertandingan ganjil (`M#1`) masuk tepat ke baris **Peserta A (atas)** pada kartu babak berikutnya, dan garis dari pertandingan genap (`M#2`) masuk tepat ke baris **Peserta B (bawah)** tanpa pernah bertabrakan dengan teks nama tim atau skor!
+3. **Geometri Path Ortogonal Ber-Radius Halus (`rounded orthogonal step path`)**:
+   - Buat helper murni untuk menghasilkan path SVG ortogonal dengan sudut melengkung (`r = 6px`):
+     `M x1 y1 H (midX - r) Q midX y1, midX (y1 ± r) V (y2 ∓ r) Q midX y2, (midX + r) y2 H x2` (atau garis lurus `M x1 y1 H x2` jika $|y_2 - y_1| < 2\text{px}$, seperti pada transisi LB babak ganjil ke LB babak genap).
+4. **Pewarnaan Semantik & Hierarki Garis Konektor**:
+   - **Default Connector (`status !== 'COMPLETED'`)**: `stroke="#2A3447"` (`var(--color-border-default)`), `strokeWidth="2"`, `strokeDasharray` solid (atau `4 4` jika sumber adalah match yang belum memiliki peserta).
+   - **Completed / Active Progression Connector (`m.status === 'COMPLETED' && m.winner_id && !m.is_bye`)**: `stroke="#10B981"` (`var(--color-success)` / Emerald) atau `#38BDF8` (`var(--color-secondary)`) dengan `strokeWidth="2.5"` dan `opacity="0.85"`, serta titik node kecil (`<circle r="3" />`) pada titik masuk slot target sehingga alur perjalanan tim pemenang terlihat jelas dari Babak 1 hingga Final.
+   - **BYE Match Handling**: Untuk match dengan `m.is_bye === true`, tampilkan badge status `"BYE • AUTO ADVANCE"` pada `MatchCard` dengan opasitas terukur (`opacity-75`) dan garis konektor putus-putus halus (`strokeDasharray="4 4"`) menuju slot Round 2 yang sudah terisi otomatis.
+   - **Drop-Down Badge Indicator (Upper → Lower & Semifinal → Bronze)**: Karena menggambar garis panjang melintasi seluruh kanvas dari Upper Bracket ke Lower Bracket akan memotong kartu pertandingan lain, tampilkan badge micro-tag asal drop-down pada slot penerima di Lower Bracket / Bronze Match (misal: `"← Loser UB R1 #1"`) cuando peserta belum ditentukan (`TBD`), sehingga hubungan antar-bracket tetap 100% jelas tanpa kekacauan garis silang.
+5. **Reaktivitas Layout (`ResizeObserver`) & Responsivitas Mobile**:
+   - Gunakan `ResizeObserver` pada `containerRef` dan panggil `requestAnimationFrame(calculatePaths)` saat ukuran kontainer, daftar `matches`, atau stage aktif berubah.
+   - Sediakan kontrol zoom/scroll horizontal yang ergonomis pada layar kecil (`overflow-x-auto custom-scrollbar` dengan indikator geser horizontal pada mobile).
 
-### 5.1 Tabel Evaluasi Fitur & Perbaikan
+## 8. Navbar, Footer & Hero Redesign
 
-| ID Fitur | Nama Fitur | Kategori Perubahan | Kondisi Saat Ini | Target Implementasi pada Revamp | Acceptance Criteria Terverifikasi |
+### 8.1 Navbar Redesign (`frontend/components/landing/navbar.tsx` & Public Header)
+**Hasil Audit `navbar.tsx`**:
+- Menu desktop saat ini memiliki 3 link: `"Fitur"` (`#features`), `"Cara Kerja"` (`#how-it-works`), dan `"Bagan Publik"` yang mengarah ke `/login` (menyesatkan karena pengguna mengira akan melihat daftar bagan publik, tetapi justru dipaksa login).
+- Tidak ada navigasi mobile (`hidden md:flex` tanpa tombol hamburger/drawer).
+- Menggunakan warna monokrom `bg-zinc-100 text-zinc-950` untuk logo dan CTA.
+
+**Spesifikasi Redesign Navbar**:
+1. **Hierarki Brand**:
+   - Logo Gridify menggunakan ikon geometris kompetitif dengan aksen `bg-accent text-white` (`#F43F5E`), teks `Gridify` dalam `--font-display font-bold tracking-tight`, dan sub-label teknis `TOURNAMENT OS` (`font-mono text-[10px] text-text-muted`).
+2. **Navigasi Kontekstual & Jujur**:
+   - Ganti link palsu `"Bagan Publik"` (`/login`) dengan navigasi ke bagian nyata di halaman utama: **`#games` ("Game Didukung")**, **`#features` ("Format & Fitur")**, dan **`#how-it-works` ("Alur Kerja")**.
+3. **Adaptasi Authentication State**:
+   - **Belum Login**: Tombol teks `"Masuk"` (`/login`) dan CTA utama `"Buat Turnamen"` (`/register` atau `/dashboard/create`) dengan warna `bg-accent hover:bg-accent-hover text-white`.
+   - **Sudah Login (`user !== null`)**: Tampilkan chip identitas `@username`, tombol sekunder `"Buat Turnamen"` (`/dashboard/create`), dan tombol utama `"Buka Dashboard"` (`/dashboard`).
+   - Terapkan pula pengecekan sesi opsional pada header halaman publik `/t/[id]` (`frontend/app/(public)/t/[id]/page.tsx`) sehingga jika penyelenggara yang sedang login membuka halaman publik, tombol kanan atas menampilkan `"Kembali ke Dashboard"` (`/dashboard/tournaments/${id}`) alih-alih `"Masuk Organizer"`.
+4. **Responsivitas Mobile & Aksesibilitas**:
+   - Tambahkan tombol toggle menu mobile (`md:hidden`) dengan panel dropdown/drawer beranimasi ringan untuk layar smartphone, lengkap dengan dukungan tombol `Escape` dan `focus-visible` ring.
+
+### 8.2 Footer Redesign (`frontend/components/landing/footer.tsx`)
+**Hasil Audit `footer.tsx`**:
+- Menampilkan link eksternal ke `https://github.com` (baris 26–33) yang tidak relevan bagi pengguna produk turnamen esports dan bahkan hanya mengarah ke beranda GitHub.
+- Terlalu tipis namun tidak informatif (hanya mengulang link `Masuk`, `Daftar`, `GitHub`).
+
+**Spesifikasi Redesign Footer**:
+1. **Hapus Total Link `GitHub` (`https://github.com`)** dan jargon developer internal.
+2. **Struktur Footer 3-Kolom yang Proporsional & 100% Faktual (Tanpa Mengarang URL Palsu)**:
+   - **Kolom 1 — Identitas Produk**: Brand Gridify, deskripsi singkat satu kalimat mengenai platform manajemen bagan dan klasemen kompetisi esports.
+   - **Kolom 2 — Format Kompetisi Didukung (Informasi Produk Faktual)**: Daftar 5 format resmi yang didukung sistem (`Single Elimination`, `Double Elimination`, `Round Robin League`, `Hybrid Group + Knockout`, `Battle Royale Leaderboard`).
+   - **Kolom 3 — Akses Cepat**: Link internal yang benar-benar ada di aplikasi (`#games` Game Didukung, `#features` Fitur Utama, `#how-it-works` Cara Kerja, `/login` Masuk Organizer, `/register` Buat Akun Organizer, `/dashboard` Dashboard).
+3. **Bottom Copyright Bar**: `© 2026 Gridify — Sistem Manajemen Kompetisi Esports.`
+
+### 8.3 Hero Section Redesign — Supported Game Logos (`frontend/components/landing/hero.tsx`)
+
+#### A. Audit Game yang Benar-Benar Didukung Sistem
+Berdasarkan verifikasi terhadap `migrations/000002_seed_games.up.sql` dan `backend/cmd/seed/main.go`, database Gridify mendukung **tepat 10 game resmi** yang terbagi ke dalam **4 genre kompetisi**:
+
+| No | Slug (`games.slug`) | Nama Resmi (`games.name`) | Genre (`games.genre`) | Platform (`games.platform`) | Format Kompetisi yang Kompatibel |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **FEAT-01** | Autentikasi & Manajemen Sesi | **Wajib (Rewrite ke Go)** | Menggunakan Supabase Auth; login username membocorkan email dari tabel `profiles`; callback rentan open redirect. | Autentikasi sesi berbasis HttpOnly cookie di Go (`POST /api/v1/auth/*`). Login menerima email atau username dan memvalidasi di sisi server tanpa mengekspos daftar email. | 1. Pengguna dapat daftar, login (via email/username), dan logout.<br>2. Request tanpa sesi ke `/dashboard/**` mendapat redirect ke `/login`.<br>3. Tidak ada endpoint publik yang membocorkan email dari username. |
-| **FEAT-02** | Manajemen Profil & Keamanan Akun | **Wajib (Perbaikan Fitur Existing)** | `BasicInfoForm` hanya mengubah metadata Supabase; ganti password harus kirim link email; username tidak tampil di halaman profil. | Halaman profil terhubung ke `GET/PATCH /api/v1/users/me` dan `POST /api/v1/users/me/password`. Pengguna dapat mengubah nama, nomor WhatsApp, username (jika belum dipakai), dan mengganti password langsung dengan memasukkan password lama. | 1. Perubahan profil tersimpan di tabel `users` PostgreSQL.<br>2. Ganti password berhasil dengan verifikasi `current_password` dan gagal (`400`) jika password lama salah. |
-| **FEAT-03** | Pembuatan Turnamen & Penegakan Match Config | **Wajib (Perbaikan Fitur Existing)** | Form menyimpan `bestOf`, `homeAway`, `pointsPerWin`, dan `hasThirdPlace`, tetapi generator dan match update mengabaikan `bestOf`, `homeAway`, dan `pointsPerWin`. | Backend Go memvalidasi dan menyimpan konfigurasi turnamen secara terstruktur, lalu menerapkannya:<br>- `homeAway = true` pada Round Robin menghasilkan jadwal 2 putaran (kandang & tandang).<br>- `pointsPerWin` diterapkan di layanan kalkulasi klasemen.<br>- `bestOf` (`1`, `3`, `5`) divalidasi saat input skor (misal BO3 membutuhkan ceil(3/2) = 2 kemenangan untuk status `COMPLETED`, dan menampilkan target seri di modal skor). | 1. Turnamen Round Robin dengan `homeAway: true` menghasilkan N(N - 1) match (2x lipat dari 1 leg).<br>2. Klasemen menghitung poin menang sesuai `pointsPerWin`.<br>3. Match BO3 hanya otomatis selesai (`COMPLETED`) ketika salah satu tim mencapai skor 2 (atau dapat disimpan sebagai `ONGOING` saat skor 1-0 / 1-1). |
-| **FEAT-04** | CRUD Peserta & Penguncian Saat Turnamen Berjalan | **Wajib (Perbaikan Fitur & Security)** | Peserta dapat ditambah/dihapus kapan saja bahkan saat turnamen `ONGOING` tanpa pemeriksaan kepemilikan; fitur edit peserta belum ada di UI. | 1. Seluruh mutasi peserta wajib memverifikasi `owner_id`.<br>2. Penambahan/penghapusan peserta dikunci di level API (`409 Conflict`) ketika status turnamen bukan `DRAFT` (kecuali admin mereset bracket terlebih dahulu).<br>3. Menambahkan tombol & modal **Edit Peserta** di halaman Participants. | 1. User non-owner mendapat `403 Forbidden` saat mencoba menambah/mengedit/menghapus peserta.<br>2. Saat status `ONGOING`/`COMPLETED`, tombol tambah/hapus peserta dinonaktifkan di UI dan ditolak dengan `409` di API.<br>3. Nama dan kontak peserta dapat diedit dari halaman Participants. |
-| **FEAT-05** | Mesin Single & Double Elimination (Perbaikan BYE & LB Math) | **Wajib (Perbaikan Bug Kritis)** | Double Elimination gagal memajukan pemenang BYE Round 1, membiarkan LB Round 1 macet, dan salah memetakan *loser* WB Round 2+ ke LB Round `-3` Match #1. | Menulis ulang generator Single & Double Elimination di Go:<br>- Menggunakan `getStandardSeedingOrder` di kedua format agar BYE tersebar merata.<br>- Memajukan pemenang BYE Round 1 secara otomatis ke Round 2, dan menyelesaikan match LB Round 1 yang berpasangan dengan slot BYE secara otomatis.<br>- Menyimpan `next_match_id`, `next_match_slot`, `loser_next_match_id`, dan `loser_next_match_slot` secara eksplisit di tabel `matches` saat generasi bracket sehingga progresi tidak lagi bergantung pada tebakan rumus saat runtime. | 1. Turnamen Double Elimination dengan 4, 5, 6, 7, 8, 12, dan 16 peserta dapat dijalankan dari Round 1 hingga Grand Final tanpa satu pun match yang macet.<br>2. *Loser* dari setiap match Upper Bracket masuk ke match dan slot Lower Bracket yang tepat.<br>3. Seluruh generasi match dieksekusi dalam 1 transaksi database (<100ms). |
-| **FEAT-06** | Mesin Hybrid UCL (Group Stage → Knockout) | **Wajib (Perbaikan Bug Kritis)** | `advanceToKnockoutAction` untuk `SINGLE_ELIMINATION` hanya membuat match Round 1 tanpa babak lanjutan; klasemen UI vs server tidak sinkron. | Endpoint `POST /api/v1/tournaments/:id/stages/:stageId/advance` menggunakan `StandingsService` tunggal untuk mengambil Top 2 tiap grup, melakukan *cross-seeding* (Juara Grup A vs Runner-up Grup B), lalu memanggil generator penuh (`GenerateSingleElimination` atau `GenerateDoubleElimination`) untuk membangun seluruh pohon bracket hingga Final. | 1. Tombol "Lanjut ke Babak Knockout" menghasilkan pohon bracket lengkap (Quarterfinal, Semifinal, Final) baik untuk Single maupun Double Elimination.<br>2. Pemenang Round 1 Knockout otomatis maju ke babak berikutnya. |
-| **FEAT-07** | Mesin Battle Royale & Konfigurasi Poin | **Wajib (Perbaikan Fitur Existing)** | Poin placement & kill di-hardcode di 2 file frontend; hasil disimpan di JSONB `matches.scores`; jumlah match dipatok 6. | 1. Menyimpan hasil per tim di tabel relasional `battle_royale_match_results`.<br>2. Menghitung leaderboard (Total Points → WWCD → Placement Points → Total Kills) di backend Go.<br>3. Mengizinkan konfigurasi jumlah match (default 6, dapat diatur 1–12 saat pembuatan turnamen). | 1. Input skor Battle Royale tersimpan di tabel `battle_royale_match_results` secara transaksional.<br>2. Leaderboard dihitung oleh backend dan menampilkan urutan yang identik di dashboard maupun halaman publik. |
-| **FEAT-08** | Podium Juara Terpadu (`ChampionsView`) & Penyatuan Halaman Standings | **Wajib (Perbaikan Bug Fitur)** | `ChampionsView` hanya muncul di Elimination; `dashboard/tournaments/[id]/standings/page.tsx` rusak karena kolom salah dan duplikat dengan tab Bracket. | 1. Backend mengembalikan objek `champions` (`first`, `second`, `third`) untuk **semua format** (`SINGLE_ELIMINATION`, `DOUBLE_ELIMINATION`, `ROUND_ROBIN`, `BATTLE_ROYALE`, `HYBRID_UCL`) saat turnamen `COMPLETED`.<br>2. Menampilkan komponen podium juara di semua format.<br>3. Menghapus/mengalihkan route yatim `/dashboard/tournaments/[id]/standings` ke `/dashboard/tournaments/[id]/bracket` agar tidak ada halaman mati yang membingungkan. | 1. Ketika seluruh match selesai, podium Juara 1, 2, dan 3 tampil dengan benar di format Single Elim, Double Elim, Round Robin, Hybrid UCL, dan Battle Royale.<br>2. Tidak ada lagi halaman yang melakukan query ke kolom `player1_id`. |
-| **FEAT-09** | Koreksi Skor Match yang Aman (Idempotent & Safe Re-calculation) | **Wajib (Perbaikan Bug Existing)** | Mengubah pemenang pada match yang sudah selesai menimpa slot berikutnya secara membabi buta tanpa memeriksa apakah match hilir sudah berjalan. | Ketika admin mengedit skor match yang sudah `COMPLETED`:<br>- Jika pemenang berubah namun match hilir (`next_match_id` dan `loser_next_match_id`) masih berstatus `SCHEDULED` (belum dimainkan), backend memperbarui slot peserta di match hilir secara otomatis.<br>- Jika match hilir sudah `ONGOING` atau `COMPLETED`, backend menolak perubahan pemenang dengan kode `409 DOWNSTREAM_MATCH_ALREADY_PLAYED` dan memberi pesan jelas kepada admin. | 1. Mengubah skor tanpa mengubah pemenang selalu berhasil.<br>2. Mengubah pemenang saat match berikutnya belum dimainkan memperbarui slot UB dan LB dengan benar.<br>3. Mengubah pemenang saat match berikutnya sudah selesai ditolak dengan pesan error yang jelas. |
-| **FEAT-10** | Realtime Updates via SSE | **Wajib (Pengganti Supabase Realtime)** | Menggunakan WebSocket Supabase `postgres_changes` dari browser. | Menggunakan endpoint Go SSE (`GET /api/v1/public/tournaments/:id/stream`) dengan *heartbeat* tiap 25 detik dan *debounce* 300ms di sisi klien (`useTournamentSSE`) untuk memicu penyegaran data tanpa membebani server. | 1. Saat admin menyimpan skor di dashboard, halaman publik `/t/[id]` otomatis memperbarui tampilan dalam waktu < 1 detik.<br>2. Indikator status koneksi (`LIVE` / `RECONNECTING`) bekerja akurat. |
+| 1 | `mobile-legends` | **Mobile Legends: Bang Bang** | `MOBA` | Mobile | Single Elim, Double Elim, Round Robin, Hybrid UCL |
+| 2 | `dota-2` | **Dota 2** | `MOBA` | PC | Single Elim, Double Elim, Round Robin, Hybrid UCL |
+| 3 | `league-of-legends` | **League of Legends** | `MOBA` | PC | Single Elim, Double Elim, Round Robin, Hybrid UCL |
+| 4 | `valorant` | **Valorant** | `FPS` | PC | Single Elim, Double Elim, Round Robin, Hybrid UCL |
+| 5 | `counter-strike-2` | **Counter-Strike 2** | `FPS` | PC | Single Elim, Double Elim, Round Robin, Hybrid UCL |
+| 6 | `ea-sports-fc` | **EA Sports FC 24** | `SPORTS` | Multiplatform | Single Elim, Double Elim, Round Robin, Hybrid UCL |
+| 7 | `efootball` | **eFootball 2024** | `SPORTS` | Multiplatform | Single Elim, Double Elim, Round Robin, Hybrid UCL |
+| 8 | `pubg-mobile` | **PUBG Mobile** | `BATTLE_ROYALE` | Mobile | Battle Royale Leaderboard (Multi-Lobby / Single Lobby) |
+| 9 | `free-fire` | **Free Fire** | `BATTLE_ROYALE` | Mobile | Battle Royale Leaderboard (Multi-Lobby / Single Lobby) |
+| 10 | `apex-legends` | **Apex Legends** | `BATTLE_ROYALE` | PC/Console | Battle Royale Leaderboard (Multi-Lobby / Single Lobby) |
 
-### 5.2 Pemisahan Kebutuhan Wajib vs Pengembangan Opsional (Out of Scope Fase Ini)
-Agar proyek tetap realistis dan bebas dari *feature creep*:
-- **Wajib Dikerjakan dalam Revamp Ini**: Seluruh item `FEAT-01` s/d `FEAT-10`, pembuatan database PostgreSQL baru yang murni, migrasi penuh business logic ke Go, penghapusan total ketergantungan Supabase, perbaikan keamanan otorisasi, dan redesign UI/UX bebas *AI slop*.
-- **Opsional / Fase Pengembangan Masa Depan (Jangan Diimplementasikan Sekarang)**:
-  - Pendaftaran mandiri peserta oleh publik (*public team self-registration* & *payment gateway*).
-  - Manajemen anggota per tim (*team roster / player accounts*) karena saat ini entitas `participants` mewakili satu tim/peserta utuh.
-  - Sistem *chat* atau *match dispute* untuk peserta.
-  - OAuth pihak ketiga (Discord / Google Login) — dapat ditambahkan di masa depan, namun fase ini fokus pada autentikasi Email/Username + Password yang solid.
+#### B. Audit Aset Saat Ini & Strategi Aset Logo Game
+- **Kondisi Saat Ini**: Direktori `frontend/public/` hanya berisi 5 ikon bawaan Next.js (`file.svg`, `globe.svg`, `next.svg`, `vercel.svg`, `window.svg`) yang bahkan tidak dipakai. Belum ada aset logo game di `frontend/public/games/`.
+- **Strategi Aset & Fallback**:
+  1. Buat direktori `frontend/public/games/` dan sediakan **10 aset logo vektor SVG (`frontend/public/games/<slug>.svg`)** yang bersih, terukur, dan dioptimalkan dengan rasio aspek seragam untuk kesepuluh game di atas (`mobile-legends.svg`, `dota-2.svg`, `league-of-legends.svg`, `valorant.svg`, `counter-strike-2.svg`, `ea-sports-fc.svg`, `efootball.svg`, `pubg-mobile.svg`, `free-fire.svg`, `apex-legends.svg`).
+  2. Buat modul metadata & komponen reusable `GameLogoBadge` (`frontend/components/ui/game-logo.tsx`) yang memetakan `game.slug` ke `/games/${slug}.svg` beserta warna aksen mikro per game dan memiliki **state fallback (`onError`) otomatis**: apabila gambar gagal dimuat atau terdapat game baru di database yang belum memiliki file SVG, komponen akan merender monogram/emblem vektor berdasarkan genre (`MOBA` / `FPS` / `SPORTS` / `BATTLE_ROYALE`) sehingga tampilan tidak pernah pecah (*broken image icon*).
+  3. Gunakan komponen `GameLogoBadge` ini tidak hanya di Hero Section, tetapi juga pada **pemilihan game di `CreateTournamentForm`**, **kartu turnamen di Dashboard**, dan **header halaman turnamen/spectator** agar integrasi visual game terasa menyeluruh di seluruh produk!
 
-## 6. UI/UX Redesign Strategy (Eliminasi "AI Slop")
+#### C. Visual Direction & Komposisi Art-Directed Hero Section
+Alih-alih menggunakan tata letak tengah generik (1 badge + 1 judul + 1 paragraf + 2 tombol), Hero Section dirancang dengan komposisi **Editorial Split + Interactive Supported Games Roster**:
+1. **Bagian Atas Hero (Headline & Value Proposition yang Berkarakter)**:
+   - Tanpa badge promosi tech stack (`Arsitektur Baru: Next.js 16...` dihapus).
+   - Headline dalam `--font-display` (`Space Grotesk`):
+     **"Kelola Bagan & Klasemen Turnamen Esports Tanpa Kompromi."**
+   - Subheadline ringkas yang langsung menjelaskan nilai produk bagi penyelenggara komunitas, kampus, dan arena kompetitif.
+   - CTA Utama (`bg-accent hover:bg-accent-hover text-white font-semibold`) `"Buat Turnamen Sekarang"` didampingi tombol sekunder `"Masuk ke Dashboard"`.
+2. **Komposisi Utama: Supported Games Matrix (`id="games"`)**:
+   - Menampilkan **10 kartu logo game resmi** dalam tata letak grid art-directed (5 kolom di desktop `lg:grid-cols-5`, 2–3 kolom di tablet/mobile) dengan filter cepat atau pengelompokan visual per kategori genre (`MOBA`, `FPS`, `SPORTS`, `BATTLE ROYALE`).
+   - Setiap tile game menampilkan:
+     - **Logo Vektor Resmi Game** (`h-9 w-9` / `h-10 w-10`) yang tajam di atas panggung gelap `bg-surface-raised border border-border-default`.
+     - **Nama Game** & **Tag Genre + Platform** (`MOBA • Mobile`, `FPS • PC`, dll.).
+     - **Interaksi Langsung**: Saat pengguna mengklik atau mengarahkan kursor ke salah satu game pada Hero (misal memilih *Valorant*, *Mobile Legends*, *EA Sports FC 24*, atau *PUBG Mobile*), komponen `BracketPreview` di bawahnya secara dinamis menyesuaikan konteks pratinjau (menampilkan contoh bagan/format yang sesuai dengan game tersebut) dan menyediakan tombol pintas `"Buat Turnamen [Nama Game] →"`!
 
-### 6.1 Design Direction & Design Principles
-Target visual baru Gridify adalah **"Precision Esports Operations UI"** — antarmuka kerja yang bersih, tajam, berfokus pada keterbacaan data turnamen (bagan pertandingan, skor, klasemen, status babak), dan memiliki karakter produk yang matang (sekelas *Linear*, *FACEIT*, atau *Challengermode*).
+## 9. Global Page-by-Page UI/UX Plan
 
-**5 Prinsip Desain Utama**:
-1. **Zero Decorative Blobs & Fake Glass**: Hapus seluruh elemen `<div className="... rounded-full blur-[100px] ..." />`, latar belakang *radial-gradient* warna-warni, dan tumpukan `backdrop-blur-xl` di atas kartu. Kedalaman visual (*depth*) dibangun melalui perbedaan tingkat kecerahan permukaan (*surface elevation*) yang terukur dan garis batas (`1px solid`) yang tegas.
-2. **Restrained Semantic Color Usage**: Warna mencolok tidak boleh dipakai sebagai dekorasi latar. Gunakan permukaan netral gelap (*Zinc/Slate Obsidian*) untuk 90% area layar, satu warna aksen primer (`Indigo-500` solid tanpa gradasi ke pink/ungu) untuk aksi utama, dan warna semantik (`Emerald` untuk menang/selesai, `Amber` untuk draft/berlangsung, `Rose` untuk bahaya/eliminasi) secara konsisten.
-3. **Tabular Data & Typography Hierarchy**: Skor pertandingan, nomor urut match (`#12`), seed peserta, selisih gol (`+4`), dan poin klasemen wajib menggunakan font *monospace* (`Geist Mono`) dengan `font-variant-numeric: tabular-nums` agar lurus sempurna secara vertikal.
-4. **Geometric Precision pada Kanvas Bracket**: Garis penghubung bracket tidak boleh menggunakan trik `div` CSS dengan tinggi statis yang putus-putus. Gunakan perhitungan koordinat berbasis grid atau SVG path yang menghubungkan titik tengah kartu match secara matematis.
-5. **Satu Bahasa Antarmuka yang Konsisten (Bahasa Indonesia Profesional)**: Seluruh label navigasi, tombol, status, pesan kosong (*empty state*), dan notifikasi menggunakan Bahasa Indonesia yang ringkas dan konsisten (tidak lagi mencampur `Setup New Tournament`, `My Tournaments`, `Sign Out` dengan `Buat Turnamen`, `Kelola Peserta`). Istilah baku internasional di dunia esports seperti `Bracket`, `Seed`, `Best of (BO3)`, `Upper Bracket`, `Lower Bracket`, `Grand Final`, dan `WWCD` tetap dipertahankan sebagai istilah domain.
+Berikut adalah pemetaan lengkap seluruh halaman dan komponen aktual di repositori ke dalam 5 kategori tindakan: **(1) Dipertahankan**, **(2) Direfactor**, **(3) Didesain Ulang**, **(4) Diperbaiki karena Bug**, dan **(5) Dihapus**.
 
-### 6.2 Sistem Desain (Design Tokens)
+### 9.1 Tabel Pemetaan Halaman & Komponen
 
-#### A. Palet Warna (Satu Sistem Token di `app/globals.css`)
-Hapus seluruh warna hex liar seperti `#1a1b26` dan `#0f1016`. Gunakan variabel CSS terpusat:
-
-| Token Semantik | Nilai Hex / Kelas Tailwind | Penggunaan |
+| Halaman / File Komponen | Kategori Tindakan | Detail Perubahan Spesifik |
 | :--- | :--- | :--- |
-| `--bg-canvas` | `#09090B` (`zinc-950`) | Latar belakang utama aplikasi & kanvas bracket. |
-| `--bg-surface` | `#121215` (`zinc-900`) | Kartu utama, sidebar, header, dan baris tabel standar. |
-| `--bg-elevated` | `#18181B` (`zinc-800/80`) | Modal dialog, dropdown menu, input field, dan hover state baris tabel. |
-| `--border-subtle` | `#27272A` (`zinc-800`) | Garis pemisah struktural utama, border kartu, dan garis tabel. |
-| `--border-focus` | `#6366F1` (`indigo-500`) | Outline fokus input dan kartu match yang sedang dipilih. |
-| `--text-primary` | `#FAFAFA` (`zinc-50`) | Judul, nama tim pemenang, skor utama, dan nilai metrik. |
-| `--text-secondary` | `#A1A1AA` (`zinc-400`) | Label form, subjudul, dan nama tim yang belum bertanding. |
-| `--text-muted` | `#71717A` (`zinc-500`) | Metadata tanggal, nomor match, teks placeholder, dan tim yang gugur. |
-| `--accent-primary` | `#4F46E5` (`indigo-600`, hover `#4338CA`) | Tombol CTA utama (solid, tanpa gradasi ke ungu/pink), indikator tab aktif. |
-| `--status-live` | `#10B981` (`emerald-500`) | Indikator `BERLANGSUNG` / `LIVE`, pemenang match, dan kuota lolos (`Q`). |
-| `--status-warning` | `#F59E0B` (`amber-500`) | Status `DRAFT` dan peringatan penguncian peserta. |
-| `--status-danger` | `#EF4444` (`red-500`) | Aksi hapus, *Danger Zone*, dan indikator koneksi terputus. |
+| `frontend/app/globals.css` | **4. Diperbaiki karena Bug** & **3. Didesain Ulang** | Tambahkan blok `@theme` Tailwind v4 lengkap untuk seluruh token warna (`surface-*`, `border-*`, `text-*`, `accent`, `secondary`, `success`, `warning`, `danger`) dan variabel tipografi (`--font-display`, `--font-sans`, `--font-mono`). |
+| `frontend/app/layout.tsx` | **2. Direfactor** | Muat `Space_Grotesk` (`--font-display`), `Plus_Jakarta_Sans` (`--font-sans`), dan `JetBrains_Mono` (`--font-mono`) dari `next/font/google`, serta terapkan kelas dasar `bg-surface-base text-text-primary`. |
+| `frontend/components/ui/button.tsx` | **3. Didesain Ulang** | Ganti varian `primary` dari monokrom `bg-zinc-100 text-zinc-950` menjadi `bg-accent text-accent-contrast hover:bg-accent-hover shadow-xs`; selaraskan `secondary`, `outline`, `danger`, dan `ghost` dengan token permukaan baru. |
+| `frontend/components/ui/input.tsx`, `select.tsx`, `card.tsx`, `badge.tsx`, `modal.tsx` | **2. Direfactor** | Ganti warna hex hardcoded (`#121215`, `#27272A`) dengan token semantik (`bg-surface-raised`, `border-border-default`, `focus-visible:border-accent`, `focus-visible:ring-accent/30`). |
+| `frontend/components/ui/confirm-dialog.tsx`, `empty-state.tsx` | **1. Dipertahankan** | Sudah menggunakan struktur token semantik (`bg-surface-raised`, `text-danger`, `bg-accent`). Akan otomatis berfungsi penuh setelah `@theme` di `globals.css` diperbaiki. |
+| `frontend/components/ui/game-logo.tsx` *(File Baru)* & `frontend/public/games/*.svg` *(Aset Baru)* | **3. Didesain Ulang (Baru)** | Komponen penampil logo untuk 10 game resmi berdasarkan `slug` dengan fallback emblem genre otomatis jika aset gagal dimuat. |
+| `frontend/public/{file,globe,next,vercel,window}.svg` | **5. Dihapus** | Hapus 5 file SVG bawaan template create-next-app yang tidak pernah digunakan di aplikasi. |
+| `frontend/components/landing/navbar.tsx` | **3. Didesain Ulang** & **4. Diperbaiki karena Bug** | Hapus link menyesatkan `"Bagan Publik"` (`/login`), tambahkan link `#games`, tambahkan menu drawer responsif untuk mobile, dan sesuaikan tampilan berdasarkan `user`. |
+| `frontend/components/landing/hero.tsx` & `bracket-preview.tsx` | **3. Didesain Ulang** | Hapus badge AI-slop `"Arsitektur Baru: Next.js 16 + Go + Realtime SSE"`. Bangun komposisi Hero baru dengan showcase interaktif 10 logo game resmi yang terhubung dengan `BracketPreview`. |
+| `frontend/components/landing/features.tsx` & `how-it-works.tsx` | **3. Didesain Ulang** | Hilangkan pola 6 kartu template AI dan jargon database internal (`PostgreSQL 17`, `owner_id`). Ubah menjadi layout kapabilitas produk dan alur operasional 3 langkah yang bersih. |
+| `frontend/components/landing/footer.tsx` | **3. Didesain Ulang** | Hapus link `https://github.com` dan teks developer-oriented. Buat struktur footer produk dengan daftar format kompetisi dan navigasi internal yang valid. |
+| `frontend/app/page.tsx` | **2. Direfactor** | Hapus pill `"SIAP MEMULAI KOMPETISI"` pada seksi CTA bawah dan rapikan menjadi bar CTA penutup yang tajam. |
+| `frontend/app/login/page.tsx`, `register/page.tsx`, `forgot-password/page.tsx`, `update-password/page.tsx` | **2. Direfactor** | Selaraskan tipografi judul dengan `font-display`, perbaiki posisi tombol ikon mata (`Eye`/`EyeOff`) pada input password agar presisi di tengah vertikal input, dan pastikan fokus input memakai `border-accent`. |
+| `frontend/app/dashboard/layout.tsx` | **2. Direfactor** | Perkuat indikator menu aktif di sidebar (garis aksen kiri `border-l-2 border-accent bg-surface-elevated text-text-primary`) dan rapikan header mobile. |
+| `frontend/app/dashboard/page.tsx` & `frontend/app/dashboard/tournaments/page.tsx` | **4. Diperbaiki karena Bug** & **2. Direfactor** | Perbaiki pembacaan nama game menjadi `t.game?.name || t.games?.name || 'Esports'`, tampilkan `GameLogoBadge` pada kartu turnamen, dan pastikan tombol hapus turnamen terlihat jelas pada perangkat sentuh (tidak hanya `opacity-0 group-hover:opacity-100`). |
+| `frontend/app/dashboard/create/page.tsx` & `frontend/features/tournaments/components/create-tournament-form.tsx` | **4. Diperbaiki karena Bug** & **3. Didesain Ulang** | 1. Perbaiki bug visual pemilihan Format Kompetisi, Best-Of, dan jumlah putaran Battle Royale.<br>2. Tambahkan pemilih Game visual berbasis kartu/logo (`GameLogoBadge`) di samping/pengganti dropdown polos.<br>3. Perbaiki bug payload `handleSubmit` (`match_rules` → field tingkat atas `best_of`, `home_away`, `has_third_place`, `br_total_matches`) agar tidak lagi gagal `400 Bad Request`. |
+| `frontend/app/dashboard/tournaments/[id]/layout.tsx` & `page.tsx` | **4. Diperbaiki karena Bug** & **2. Direfactor** | Perbaiki pembacaan `tournament.game?.name`, tampilkan logo game di header turnamen, dan integrasikan indikator status koneksi SSE di header. |
+| `frontend/app/dashboard/tournaments/[id]/bracket/page.tsx` & `frontend/app/(public)/t/[id]/page.tsx` | **4. Diperbaiki karena Bug** & **2. Direfactor** | Teruskan `brLeaderboard={stageViewData?.br_leaderboard}` dan `champions={stageViewData?.champions}` ke `<BattleRoyaleView />` dan `<StandingsTable />`. Pada `/t/[id]`, hapus pill `"SPECTATOR LIVE VIEW"` dan padatkan header penonton. |
+| `frontend/features/bracket/components/bracket-visualizer.tsx` & `match-card.tsx` | **4. Diperbaiki karena Bug** & **3. Didesain Ulang** | 1. Filter match berdasarkan `m.bracket_type` (`UPPER`, `LOWER`, `GRAND_FINAL`, `THIRD_PLACE`).<br>2. Perbaiki pembacaan skor `match.score_a ?? match.participant_a_score ?? 0`.<br>3. Implementasikan konektor SVG ortogonal dengan anchor per slot (`slot-a` dan `slot-b`), warna semantik untuk jalur pemenang, penanganan match `is_bye`, dan `ResizeObserver`. |
+| `frontend/features/bracket/components/standings-table.tsx` & `backend/internal/service/standings_service.go` | **4. Diperbaiki karena Bug** | 1. Atasi React unique key warning dengan mengekstrak `row.participant?.id ?? row.participant_id` dan menambahkan `participant_id` & `participant_name` di serializer Go.<br>2. Perbaiki highlight lolos `Q` pada grup `"Grup A"`, `"Grup B"`.<br>3. Batasi tombol `<AdvanceButton />` hanya untuk `HYBRID_UCL` saat babak Knockout belum digenerate.<br>4. Tampilkan `<ChampionsView />` saat liga selesai. |
+| `frontend/features/bracket/components/league-match-card.tsx` & `score-modal.tsx` | **4. Diperbaiki karena Bug** | Perbaiki pembacaan `match.score_a` dan `match.score_b` sehingga skor pertandingan liga dan eliminasi tampil akurat di kartu dan di dalam input modal. |
+| `frontend/features/bracket/components/br-view.tsx`, `br-leaderboard.tsx`, `br-match-input.tsx`, `br-score-modal.tsx`, `br-group-list.tsx` | **4. Diperbaiki karena Bug** & **2. Direfactor** | 1. Gunakan `br_leaderboard` dari backend Go dan pastikan key `<tr>` unik (`row.participant?.id`).<br>2. Perbaiki label putaran dari `Game #{match.match_number}` (selalu `#1`) menjadi `Game #{match.round_number}` serta tampilkan `match.map_name` (`Erangel`, `Miramar`, dll.) dan `match.playing_groups`.<br>3. Sertakan hasil per match agar `BRScoreModal` menampilkan data tersimpan saat diedit ulang.<br>4. Tampilkan `<ChampionsView />` pada `BattleRoyaleView`. |
+| `frontend/features/bracket/components/champions-view.tsx` | **3. Didesain Ulang** | Desain ulang menjadi Compact Podium Banner horizontal tanpa pill dekoratif dan tanpa bar vertikal raksasa. |
+| `frontend/features/tournaments/components/tournament-settings-form.tsx` | **4. Diperbaiki karena Bug** | Perbaiki indikator visual kartu pemilihan `Status Turnamen` (`DRAFT`, `ONGOING`, `COMPLETED`) dengan `<button type="button" role="radio">` dan state aktif yang tegas. |
+| `frontend/components/providers/tournament/realtime-listener.tsx` | **2. Direfactor** | Ubah dari pill melayang `fixed bottom-4 right-4` menjadi indikator bar/badge kompak yang tidak menutupi elemen interaktif di sudut kanan bawah layar. |
+| `frontend/app/dashboard/tournaments/[id]/standings/page.tsx` | **1. Dipertahankan** | Tetap dipertahankan sebagai *redirect route* bersih (`redirect('/dashboard/tournaments/${id}/bracket')`) untuk menjaga kompatibilitas URL lama. |
 
-#### B. Tipografi (`app/layout.tsx` & `app/globals.css`)
-- **Font Utama (`--font-sans`)**: `Geist` (atau `Inter` dengan variabel CSS `--font-sans` yang terhubung benar di `app/layout.tsx`). Hapus deklarasi `font-family: Arial, Helvetica, sans-serif;` dari `app/globals.css`.
-- **Font Angka & Teknis (`--font-mono`)**: `Geist Mono` atau `JetBrains Mono` untuk seluruh elemen skor, statistik (`MP`, `W`, `D`, `L`, `GD`, `PTS`), nomor match, dan URL bagikan.
-- **Skala Tipografi**:
-  - Judul Halaman (`H1`): `text-2xl font-semibold tracking-tight text-zinc-50` (hindari `text-7xl font-black` kecuali `text-4xl sm:text-5xl font-bold` di Hero landing page).
-  - Judul Seksi (`H2`): `text-base font-semibold text-zinc-100`.
-  - Label Kolom / Form: `text-xs font-medium text-zinc-400` (hindari huruf kapital semua dengan tracking berlebihan `tracking-[0.3em]` kecuali pada header tabel).
+## 10. Architecture & Regression Considerations
 
-#### C. Spacing, Radius, dan Elevasi
-- **Border Radius**: Maksimal `rounded-lg` (`8px`) untuk tombol, input, dan kartu match; `rounded-xl` (`12px`) untuk panel kontainer besar dan modal. Hapus seluruh penggunaan `rounded-3xl` dan `rounded-full` pada kontainer non-badge.
-- **Motion & Micro-interactions**: Hapus semua `hover:scale-105` dan `hover:scale-[1.02]` pada tombol dan kartu. Gunakan transisi warna latar dan border berdurasi `150ms ease-out`.
+Untuk memastikan seluruh perubahan UI/UX dan perbaikan bug tidak merusak logika bisnis atau kontrak API yang sudah berjalan:
+1. **Backward-Compatible API Enrichment di Backend Go**:
+   - Penambahan field `participant_id` dan `participant_name` pada `StandingRow` dan `BRLeaderboardRow` di `backend/internal/service/standings_service.go` bersifat **aditif (non-breaking)**: objek `participant` tetap disertakan seperti semula.
+   - Pada `TournamentHandler.Create` (`backend/internal/transport/http/handler/tournament_handler.go`), selain memperbaiki `CreateTournamentForm` di frontend agar mengirim field tingkat atas (`best_of`, `home_away`, `has_third_place`, `br_total_matches`), kita juga dapat menambahkan dukungan opsional `MatchRules *struct{...} json:"match_rules,omitempty"` pada `CreateTournamentPayload` di Go sehingga baik payload tingkat atas maupun payload dengan `match_rules` diterima dengan aman tanpa memicu error `DisallowUnknownFields()`.
+   - Pada `domain.Match` (`backend/internal/domain/tournament.go`) dan `GetStageView` (`standings_service.go`), untuk mode `BATTLE_ROYALE`, kita dapat melampirkan `br_results?: BattleRoyaleMatchResult[]` pada masing-masing match sehingga ketika admin membuka kembali `BRScoreModal` untuk mengedit game yang sudah selesai, nilai `placement_rank` dan `kills` sebelumnya langsung terisi di form!
+2. **Zero Database Schema Mutation**:
+   - Tidak diperlukan perubahan atau penghapusan tabel pada `migrations/000001_init_schema.up.sql` maupun `000002_seed_games.up.sql`. Seluruh perbaikan memanfaatkan kolom yang sudah ada di skema PostgreSQL 17 (`score_a`, `score_b`, `bracket_type`, `round_number`, `next_match_id`, `next_match_slot`, `loser_next_match_id`, `loser_next_match_slot`, `playing_groups`, `map_name`).
+3. **Preservasi Strict TypeScript & Zero External Runtime Dependencies**:
+   - Tidak perlu menginstal library UI eksternal baru yang berat. Seluruh komponen menggunakan React 19, Tailwind CSS v4, `@headlessui/react`, `lucide-react`, dan SVG native dengan `typescript.ignoreBuildErrors: false`.
 
-### 6.3 Rekomendasi Redesign Spesifik per Halaman
+## 11. Phased Implementation Plan
 
-| Halaman / Komponen | Masalah Saat Ini ("AI Slop" & UX) | Pendekatan Redesign yang Diwajibkan |
-| :--- | :--- | :--- |
-| **1. Landing Page (`app/page.tsx`, `components/landing/*`)** | Hero hanya berisi teks raksasa dengan gradasi ungu dan 2 bola blur tanpa menunjukkan wujud aplikasi; 6 kartu fitur `rounded-3xl` generik; link `Komunitas`, `Privacy`, `Terms`, `Contact` mengarah ke `#`. | - Ganti dekorasi blur Hero dengan **Interactive Bracket Preview Mockup** (komponen visual statis yang menampilkan contoh bracket semi-final/final Gridify secara nyata).<br>- Gunakan layout *Bento/Grid* berbatas garis `1px border-zinc-800` yang menampilkan kapabilitas nyata (Multi-Format, Live Spectator Link & QR, Kalkulasi Otomatis Liga & Battle Royale).<br>- Hapus link mati `#` di Navbar & Footer; sisakan navigasi ke `#features`, `#how-it-works`, `/login`, dan `/register`. |
-| **2. Halaman Auth (`login`, `register`, `forgot-password`, `reset-password`)** | Setiap halaman memakai warna latar dan gradasi tombol yang berbeda (indigo di login, pink-ungu di register, putih di forgot-password) dengan bola-bola blur. | - Satukan ke dalam `app/(auth)/layout.tsx` dengan struktur split atau kartu tunggal `max-w-md bg-zinc-900 border border-zinc-800 rounded-xl p-6 sm:p-8` di atas latar `#09090B` bersih.<br>- Gunakan tombol primer solid `bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg` di semua halaman auth. |
-| **3. Dashboard Shell & Overview (`app/dashboard/layout.tsx`, `page.tsx`)** | Bola blur 500px di belakang layar; sidebar memakai teks Inggris; metrik "Jadwal Mendatang" statis `0`; tombol hapus di atas kartu turnamen memakai `pointer-events-none` overlay yang rawan salah klik di layar sentuh. | - Hapus dekorasi blur di `dashboard/layout.tsx`.<br>- Buat sidebar padat (`w-60 bg-zinc-900 border-r border-zinc-800`) dengan indikator garis vertikal kiri pada menu aktif dan profil ringkas pengguna di bagian bawah.<br>- Tampilkan angka riil `upcoming_matches_count` dari API.<br>- Ganti kartu turnamen agar menggunakan struktur header-body-footer yang jelas dengan menu aksi (`...` atau tombol ikon eksplisit) tanpa tumpukan `absolute inset-0 z-10` vs `z-20`. |
-| **4. Layout & Navigasi Detail Turnamen (`app/dashboard/tournaments/[id]/layout.tsx`)** | Menampilkan UUID `tournament.game_id` mentah; tab navigasi tidak memiliki *active state* karena dirender sebagai Server Component statis. | - Tampilkan badge nama game (`tournament.game.name`), format turnamen, dan status turnamen di header.<br>- Ekstrak tab navigasi menjadi Client Component `TournamentTabNav` yang membaca `usePathname()` dan memberi garis bawah `border-b-2 border-indigo-500 text-white` pada tab aktif (`Ringkasan`, `Bracket & Jadwal`, `Peserta`, `Pengaturan`). |
-| **5. Kanvas Bracket & Match Card (`bracket-visualizer.tsx`, `match-card.tsx`, `champions-view.tsx`)** | Garis konektor CSS `div` putus pada ronde ≥ 2; podium juara memakai ikon piala raksasa `size={100}` dengan glow kuning berlebihan dan hanya muncul di Elimination. | - Bangun layout bracket berbasis kolom ronde dengan perhitungan tinggi baris seragam atau komponen SVG konektor yang menghitung koordinat kartu.<br>- Desain ulang `MatchCard`: lebar `w-60`, border tegas `border-zinc-800`, bar status tipis di header, skor dalam kotak `font-mono bg-zinc-950 px-2.5 py-1`, dan highlight pemenang menggunakan aksen kiri `border-l-2 border-emerald-500`.<br>- Ganti `ChampionsView` menjadi **Compact Podium Banner** horizontal (3 kolom proporsional untuk Juara 1, 2, dan 3 tanpa glow neon berlebihan) yang ditampilkan di semua format turnamen saat status `COMPLETED`. |
-| **6. Halaman Peserta & Modal Konfirmasi (`participants/page.tsx`, `delete-button.tsx`, dll.)** | Menggunakan `window.confirm()`; tidak bisa mengedit peserta yang salah ketik; form tambah tetap aktif saat turnamen sudah berjalan. | - Buat komponen `ConfirmDialog` berbasis `@headlessui/react` untuk seluruh aksi destruktif (Hapus Turnamen, Hapus Peserta, Reset Bracket, Lanjut ke Knockout).<br>- Tambahkan tombol **Edit Peserta** (inline atau modal) dan nonaktifkan tambah/hapus peserta ketika status turnamen bukan `DRAFT`. |
-| **7. Halaman Profil (`app/dashboard/profile/page.tsx`, `basic-info-form.tsx`, `security-form.tsx`)** | Warna `#1a1b26` tidak konsisten dengan halaman lain; ganti password memaksa kirim email reset. | - Gunakan komponen permukaan standar `bg-zinc-900 border-zinc-800`.<br>- Tambahkan field `username` di form informasi dasar, dan ubah `SecurityForm` menjadi form ganti password langsung (`Password Saat Ini`, `Password Baru`, `Konfirmasi Password Baru`). |
+Urutan fase disusun secara ketat berdasarkan ketergantungan (*dependency order*): fondasi Design System & Token CSS (Phase 1) harus selesai terlebih dahulu sebelum perbaikan komponen interaktif & bug fungsional (Phase 2), diikuti oleh mesin visualisasi bracket (Phase 3), redesign Hero/Navbar/Footer & aset logo game (Phase 4), penyelarasan halaman global (Phase 5), dan verifikasi akhir (Phase 6).
 
-## 7. Database Architecture & Pure PostgreSQL Schema Design
+### Phase 1 — Design System Foundation, Color Tokens & Typography (`DS-*`)
+*Fondasi CSS dan tipografi yang wajib diselesaikan pertama kali karena mendasari seluruh perbaikan visual dan state aktif komponen.*
 
-### 7.1 Prinsip Desain Database Baru (100% Pure Greenfield PostgreSQL 17)
-Sesuai keputusan arsitektur proyek, kita **tidak melakukan backup atau migrasi data dari Supabase lama**, melainkan membangun **database PostgreSQL 17 baru yang benar-benar murni (*clean-slate*)** dan disesuaikan 100% dengan temuan hasil audit codebase. Keputusan ini memberikan keuntungan arsitektural yang signifikan:
+#### `DS-001` — Implementasi Tailwind CSS v4 `@theme` & Palet Warna "Tactical Broadcast Slate & Crimson Volt"
+- **Status**: `DONE`
+- **Prioritas**: `P0`
+- **Dependencies**: None
+- **Lokasi Implementasi**:
+  - `frontend/app/globals.css`
+  - `frontend/components/providers/app-providers.tsx`
+- **Alasan & Audit Finding**:
+  Menjawab **CFM-02** dan **IMP-01**. Saat ini `globals.css` tidak memiliki blok `@theme`, sehingga seluruh kelas utilitas semantik (`bg-accent`, `border-accent`, `text-accent`, `bg-surface-base`, `bg-surface-raised`, `bg-surface-elevated`, `border-border-default`, `border-border-subtle`, `text-text-primary`, `text-text-secondary`, `text-text-muted`, `bg-danger`, `text-danger`) gagal menghasilkan CSS dan menyebabkan bug pilihan format tidak terlihat serta tampilan monokrom yang datar.
+- **Deskripsi Perubahan Spesifik**:
+  1. Definisikan variabel CSS di `:root` dan petakan seluruhnya di dalam blok `@theme` pada `frontend/app/globals.css`:
+     - `--color-surface-base: #0B0E14`
+     - `--color-surface-raised: #111620`
+     - `--color-surface-elevated: #171E2B`
+     - `--color-surface-overlay: #1E2738`
+     - `--color-border-subtle: #1E2636`
+     - `--color-border-default: #2A3447`
+     - `--color-border-strong: #3B4963`
+     - `--color-text-primary: #F8FAFC`
+     - `--color-text-secondary: #CBD5E1`
+     - `--color-text-muted: #64748B`
+     - `--color-accent: #F43F5E`
+     - `--color-accent-hover: #E11D48`
+     - `--color-accent-contrast: #FFFFFF`
+     - `--color-secondary: #38BDF8`
+     - `--color-success: #10B981`
+     - `--color-warning: #F59E0B`
+     - `--color-danger: #EF4444`
+  2. Perbarui konfigurasi warna toast di `frontend/components/providers/app-providers.tsx` agar menggunakan permukaan `#111620` dan border `#2A3447`.
+- **Acceptance Criteria**:
+  - Seluruh kelas `bg-accent`, `border-accent`, `text-accent`, `bg-surface-*`, `border-border-*`, dan `text-text-*` terkompilasi menjadi aturan CSS yang aktif di browser.
+  - Kontras teks terhadap permukaan memenuhi standar WCAG AA ($\ge 4.5:1$ untuk teks normal, $> 10:1$ untuk teks utama).
+- **Testing Requirements**:
+  - Jalankan `npm run build` di `frontend/` dan verifikasi output stylesheet mengandung definisi variabel `--color-accent` dan kelas utilitas terkait.
 
-1. **Bebas dari Struktur Warisan Supabase Auth (`auth.users` vs `public.profiles`)**:
-   Tidak ada lagi pemisahan antara skema `auth` internal dan tabel `profiles` publik maupun penyimpanan atribut profil di dalam blob `raw_user_meta_data`. Seluruh identitas, kredensial (`password_hash` murni Argon2id), dan profil pengguna disatukan secara bersih di dalam tabel `users`, didukung oleh `user_sessions` dan `password_reset_tokens`.
-2. **Eliminasi Total Polimorfisme JSONB `matches.scores`**:
-   Di kode lama, kolom `matches.scores` dipakai untuk menyimpan skor head-to-head (`{a, b}`), daftar grup yang bermain (`{groups: ["A", "B"]}`), sekaligus array hasil pertandingan Battle Royale (`{results: [...]}`). Pada skema PostgreSQL baru:
-   - Skor pertandingan head-to-head disimpan sebagai kolom integer bertipe kuat (`score_a INT NOT NULL DEFAULT 0`, `score_b INT NOT NULL DEFAULT 0`) dengan constraint `CHECK (score_a >= 0 AND score_b >= 0)`.
-   - Daftar grup Battle Royale disimpan pada kolom terpisah `playing_groups TEXT[]`.
-   - Hasil per tim pada mode Battle Royale disimpan di tabel relasional khusus **`battle_royale_match_results`** yang memiliki `FOREIGN KEY` langsung ke `matches(id)` dan `participants(id)` serta `UNIQUE (match_id, participant_id)`.
-3. **Eliminasi Angka Ajaib (`round_number < 0` dan `999`) serta Penautan Eksplisit Jalur Menang & Kalah**:
-   Di kode lama, Lower Bracket memakai nomor ronde negatif (`-1`, `-2`) dan Grand Final memakai `999`, serta tidak memiliki kolom tujuan untuk tim yang kalah. Pada skema baru:
-   - Setiap match memiliki `bracket_type` eksplisit (`UPPER`, `LOWER`, `GRAND_FINAL`, `THIRD_PLACE`, `ROUND_ROBIN`, `BATTLE_ROYALE`) dan `round_number >= 1` yang selalu positif.
-   - Setiap match menyimpan tautan eksplisit untuk jalur menang (`next_match_id`, `next_match_slot` bernilai `'A'` atau `'B'`) dan jalur kalah (`loser_next_match_id`, `loser_next_match_slot` bernilai `'A'` atau `'B'`). Dengan desain ini, progresi pemenang dan *drop-down* ke Lower Bracket / Bronze Match menjadi operasi pembacaan pointer relasional yang deterministik, bukan lagi tebakan rumus matematika saat runtime.
-4. **Integritas Referensial & Cascading Delete Otomatis di Level Database**:
-   Di kode lama (`delete-actions.ts`), penghapusan turnamen harus menjalankan 4 query `DELETE` manual dari aplikasi yang rawan meninggalkan data yatim dan bahkan menghapus match orang lain sebelum mengecek `owner_id`. Pada skema baru, seluruh relasi anak (`stages`, `participants`, `matches`, `battle_royale_match_results`) menggunakan `ON DELETE CASCADE`, sehingga penghapusan turnamen cukup mengeksekusi satu perintah `DELETE FROM tournaments WHERE id = $1 AND owner_id = $2` secara atomik.
+#### `DS-002` — Implementasi Sistem Tipografi 3-Tier (`Space Grotesk`, `Plus Jakarta Sans`, `JetBrains Mono`)
+- **Status**: `DONE`
+- **Prioritas**: `P1`
+- **Dependencies**: `DS-001`
+- **Lokasi Implementasi**:
+  - `frontend/app/layout.tsx`
+  - `frontend/app/globals.css`
+- **Alasan & Audit Finding**:
+  Menjawab **IMP-02**. Penggunaan font tunggal `Inter` membuat headline dan elemen kompetitif terasa monoton dan kurang berkarakter.
+- **Deskripsi Perubahan Spesifik**:
+  1. Di `frontend/app/layout.tsx`, impor `Space_Grotesk` (`variable: '--font-display'`, weights `['600', '700']`), `Plus_Jakarta_Sans` (`variable: '--font-sans'`, weights `['400', '500', '600', '700']`), dan `JetBrains_Mono` (`variable: '--font-mono'`, weights `['500', '700']`) dari `next/font/google`.
+  2. Daftarkan `--font-display`, `--font-sans`, dan `--font-mono` ke dalam `@theme` di `frontend/app/globals.css`, serta atur aturan default `h1, h2, .font-display { font-family: var(--font-display), sans-serif; }` dan `.font-mono { font-variant-numeric: tabular-nums; }`.
+- **Acceptance Criteria**:
+  - Elemen `h1`, `h2`, dan `.font-display` merender `Space Grotesk`.
+  - Body text dan input form merender `Plus Jakarta Sans`.
+  - Seluruh skor, nomor match, seed, dan angka tabel merender `JetBrains Mono` dengan lebar digit seragam (`tabular-nums`).
+- **Testing Requirements**:
+  - Verifikasi pemuatan font tanpa error kompilasi di `next build` dan inspeksi computed `font-family` pada elemen heading, body, dan skor.
 
-### 7.2 Pemetaan Perbaikan Skema Berdasarkan Temuan Audit
+#### `DS-003` — Penyelarasan Komponen UI Dasar (`Button`, `Input`, `Select`, `Card`, `Badge`, `Modal`)
+- **Status**: `DONE`
+- **Prioritas**: `P1`
+- **Dependencies**: `DS-001`, `DS-002`
+- **Lokasi Implementasi**:
+  - `frontend/components/ui/button.tsx`
+  - `frontend/components/ui/input.tsx`
+  - `frontend/components/ui/select.tsx`
+  - `frontend/components/ui/card.tsx`
+  - `frontend/components/ui/badge.tsx`
+  - `frontend/components/ui/modal.tsx`
+- **Alasan & Audit Finding**:
+  Menjawab **IMP-01** dan **CFM-02**. Komponen di `components/ui/` masih menggunakan warna hex monokrom hardcoded (`bg-zinc-100 text-zinc-950`, `bg-[#121215]`, `border-[#27272A]`) dan ring fokus abu-abu.
+- **Deskripsi Perubahan Spesifik**:
+  1. Pada `button.tsx`: Ubah varian `primary` menjadi `bg-accent text-accent-contrast hover:bg-accent-hover active:bg-accent-hover/90 shadow-xs`, `secondary` menjadi `bg-surface-elevated text-text-primary border border-border-default hover:border-border-strong hover:bg-surface-overlay`, `outline` menjadi `border border-border-default bg-transparent text-text-secondary hover:text-text-primary hover:bg-surface-elevated`, dan `focus-visible:ring-accent`.
+  2. Pada `input.tsx`, `select.tsx`, `card.tsx`, dan `modal.tsx`: Ganti `#121215` dan `#27272A` dengan `bg-surface-raised`, `border-border-default`, `text-text-primary`, `placeholder:text-text-muted`, serta `focus-visible:border-accent focus-visible:ring-1 focus-visible:ring-accent`.
+- **Acceptance Criteria**:
+  - Tidak ada lagi kode warna `#121215`, `#18181B`, atau `#27272A` yang di-hardcode di dalam `frontend/components/ui/*.tsx`.
+  - Tombol primer menampilkan warna Crimson Valor (`#F43F5E`) dengan teks putih tajam dan state hover/focus yang jelas.
+- **Testing Requirements**:
+  - Pemeriksaan `tsc --noEmit` dan verifikasi visual seluruh varian tombol, input, select, badge, dan modal.
 
-| Area Audit | Kelemahan pada Codebase Lama | Solusi pada Skema PostgreSQL 17 Murni |
-| :--- | :--- | :--- |
-| **Identitas & Profil (`AUD-SEC-03`)** | Tabel `profiles` terpisah dari `auth.users`; `first_name` & `phone` tersimpan di `user_metadata` JSON; username tidak punya constraint case-insensitive. | Tabel `users` terpadu dengan indeks unik `UNIQUE (LOWER(email))` dan `UNIQUE (LOWER(username))` untuk mencegah duplikasi akun beda huruf besar/kecil. |
-| **Konfigurasi Turnamen (`AUD-BUG-06`)** | Disimpan di JSONB `tournaments.settings` (`bestOf` berupa string `"1"`, `homeAway`, `pointsPerWin`, `hasThirdPlace`) tanpa validasi skema. | Diekstrak menjadi kolom relasional bertipe tegas pada tabel `tournaments` (`best_of SMALLINT`, `home_away BOOLEAN`, `points_per_win SMALLINT`, `points_per_draw SMALLINT`, `has_third_place BOOLEAN`, `br_total_matches SMALLINT`, `br_max_teams_per_match SMALLINT`, `br_point_system JSONB`). |
-| **Urutan & Grup Peserta** | `participants` tidak memiliki nomor seed sehingga urutan acak hilang setelah generasi bracket; nama peserta bisa kosong. | Tabel `participants` dilengkapi `seed_number INT NOT NULL`, `group_name VARCHAR(32)`, dan `CHECK (LENGTH(TRIM(name)) > 0)`. |
-| **Validasi Integritas Match (`AUD-BUG-01`, `AUD-BUG-05`)** | Status match tidak konsisten (`IN_PROGRESS` vs `ONGOING`); `winner_id` bisa diisi ID peserta yang bukan peserta match tersebut; `participant_a_id` dan `participant_b_id` bisa berisi tim yang sama. | Tabel `matches` menerapkan 3 `CHECK` constraint tingkat tabel:<br>1. `participant_a_id <> participant_b_id`<br>2. `winner_id` wajib bernilai `NULL`, `participant_a_id`, atau `participant_b_id`<br>3. Status dikunci ketat pada `'SCHEDULED'`, `'ONGOING'`, `'COMPLETED'`. |
-| **Klasemen & Battle Royale (`AUD-DB-01`)** | Hasil Battle Royale disimpan sebagai array JSONB di `matches.scores.results` tanpa foreign key ke `participants`. | Tabel `battle_royale_match_results` dengan `FOREIGN KEY (participant_id) REFERENCES participants(id) ON DELETE CASCADE` dan kolom terhitung `placement_points`, `kill_points`, `total_points`. |
+### Phase 2 — Functional Bugs & Data Contract Fixes (`BUG-*`)
+*Menuntaskan seluruh bug fungsional P0/P1 dan console errors yang ditemukan saat manual testing dan audit kode.*
 
-### 7.3 Spesifikasi DDL Lengkap (`migrations/000001_init_schema.up.sql`)
+#### `BUG-001` — Fix React Unique Key Warning, Blank Team Names & Group Qualification Highlight pada `StandingsTable`
+- **Status**: `DONE`
+- **Prioritas**: `P0`
+- **Dependencies**: `DS-001`
+- **Lokasi Implementasi**:
+  - `backend/internal/service/standings_service.go`
+  - `frontend/features/bracket/components/standings-table.tsx`
+  - `frontend/types/api.ts`
+- **Alasan & Audit Finding**:
+  Menjawab **CFM-01** dan **POT-02** / **POT-03**. Mengatasi error `Each child in a list should have a unique "key" prop` pada `standings-table.tsx:156` yang disebabkan oleh `row.participant_id` bernilai `undefined` ketika menerima data `standings` dari backend Go, sekaligus memperbaiki nama tim yang kosong, highlight lolos grup `"Grup A"`/`"Grup B"`, dan visibilitas `<AdvanceButton />`.
+- **Deskripsi Perubahan Spesifik**:
+  1. Di `backend/internal/service/standings_service.go`: Tambahkan field `ParticipantID uuid.UUID` (`json:"participant_id"`) dan `ParticipantName string` (`json:"participant_name"`) pada struct `StandingRow` dan isi nilainya dari `p.ID` dan `p.Name` di `CalculateRoundRobinStandings`.
+  2. Di `frontend/features/bracket/components/standings-table.tsx`:
+     - Normalisasi setiap baris di `calculatedRows` sehingga `participant_id: r.participant?.id || r.participant_id` dan `participant_name: r.participant?.name || r.participant_name || 'Peserta'` selalu terdefinisi.
+     - Gunakan `key={`${grpName}-${row.participant?.id || row.participant_id}`}` pada elemen `<tr>` (baris 156).
+     - Perbaiki kondisi highlight lolos babak grup dari `grpName.includes('Group')` menjadi `isMultiGroup` (`groupedStandings.size > 1 || grpName.startsWith('Grup') || grpName.startsWith('Group')`).
+     - Tambahkan prop `tournament?: Tournament`, `champions?: Champions | ChampionResult[]`, dan `hasKnockoutMatches?: boolean` pada `StandingsTableProps`:
+       - Render `<ChampionsView />` di atas tabel klasemen apabila turnamen berformat `ROUND_ROBIN` telah selesai (`champions` tersedia).
+       - Hanya tampilkan `<AdvanceButton />` apabila `tournament?.format_type === 'HYBRID_UCL' && !hasKnockoutMatches && isFinished && !isReadOnly`.
+- **Acceptance Criteria**:
+  - 0 React key warning di browser console saat membuka halaman klasemen `ROUND_ROBIN` maupun `HYBRID_UCL`.
+  - Nama seluruh peserta tampil lengkap dan akurat di setiap baris tabel klasemen.
+  - Peringkat 1 dan 2 pada setiap grup di mode `HYBRID_UCL` menampilkan highlight baris dan badge `Q`.
+  - Tombol `"Lanjut ke Babak Knockout Playoff"` hanya tampil pada mode `HYBRID_UCL` saat fase grup selesai dan babak Knockout belum dibuat.
+- **Testing Requirements**:
+  - Jalankan `go test ./internal/service/...` di backend dan uji render `StandingsTable` dengan dataset `GroupStanding[]` dari API Go.
 
-```sql
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+#### `BUG-002` — Fix Visual Selection Feedback, Keyboard Accessibility & Payload Submission pada `CreateTournamentForm` dan `TournamentSettingsForm`
+- **Status**: `DONE`
+- **Prioritas**: `P0`
+- **Dependencies**: `DS-001`, `DS-003`
+- **Lokasi Implementasi**:
+  - `frontend/features/tournaments/components/create-tournament-form.tsx`
+  - `frontend/features/tournaments/components/tournament-settings-form.tsx`
+  - `backend/internal/transport/http/handler/tournament_handler.go`
+- **Alasan & Audit Finding**:
+  Menjawab **CFM-02** dan **CFM-03**. Memperbaiki bug di mana pilihan format kompetisi, seri Best-Of, putaran Battle Royale, dan status turnamen tidak terlihat saat dipilih, serta memperbaiki bug `400 Bad Request` (`INVALID_PAYLOAD`) saat menyimpan turnamen baru.
+- **Deskripsi Perubahan Spesifik**:
+  1. Di `frontend/features/tournaments/components/create-tournament-form.tsx`:
+     - Ubah kartu pemilihan format kompetisi menjadi elemen `<button type="button" role="radio" aria-checked={isSelected}>` di dalam `<div role="radiogroup">`.
+     - Terapkan styling state aktif yang kontras dan jelas:
+       - **Selected (`isSelected === true`)**: `bg-accent/12 border-2 border-accent shadow-sm ring-1 ring-accent/30`, ikon format berwarna `text-accent`, badge status `"AKTIF"` (`bg-accent text-white text-[10px] font-mono font-bold px-2 py-0.5 rounded`), dan lingkaran radio terisi `bg-accent border-accent text-white` dengan ikon `Check`.
+       - **Unselected (`isSelected === false`)**: `bg-surface-base border border-border-default hover:border-border-strong hover:bg-surface-elevated/60`.
+       - **Focus**: `focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent`.
+     - Terapkan indikator state aktif yang tegas (`border-2 border-accent bg-accent/15 text-text-primary font-bold`) pada tombol pilihan `Best Of` (`BO1`, `BO3`, `BO5`) dan jumlah putaran `Battle Royale` (`3`–`8` Round).
+     - Bersihkan `FORMAT_OPTIONS` dari genre fiktif `'FIGHTING'` dan sesuaikan `validGenres` dengan 4 genre resmi database (`MOBA`, `FPS`, `SPORTS`, `BATTLE_ROYALE`).
+     - Perbaiki `handleSubmit` agar mengirimkan field tingkat atas (`best_of`, `home_away`, `has_third_place`, `br_total_matches`) secara langsung tanpa membungkusnya ke dalam `match_rules` yang ditolak oleh `DisallowUnknownFields()`.
+  2. Di `backend/internal/transport/http/handler/tournament_handler.go`:
+     - Tambahkan dukungan kompatibilitas mundur pada `CreateTournamentPayload` untuk membaca field opsional `MatchRules` jika dikirim oleh klien lama, sambil tetap memprioritaskan field tingkat atas (`best_of`, `home_away`, `has_third_place`, `br_total_matches`).
+  3. Di `frontend/features/tournaments/components/tournament-settings-form.tsx`:
+     - Ubah kartu pemilihan `Status Turnamen` (`DRAFT`, `ONGOING`, `COMPLETED`) menjadi `<button type="button" role="radio" aria-checked={isSelected}>` dengan border `border-2 border-accent bg-accent/12` dan indikator aktif yang jelas.
+- **Acceptance Criteria**:
+  - Ketika pengguna memilih format kompetisi, kartu yang dipilih langsung menampilkan border `2px` berwarna `accent` (`#F43F5E`), latar belakang ter-highlight, ikon centang aktif, dan badge indikator.
+  - Pengguna dapat berpindah antar-pilihan format menggunakan tombol `Tab` dan memilih dengan `Enter`/`Space`.
+  - Pengiriman form `Buat Turnamen Sekarang` berhasil (`201 Created`) untuk kelima format kompetisi dan menyimpan `best_of`, `home_away`, `has_third_place`, serta `br_total_matches` secara akurat di PostgreSQL.
+- **Testing Requirements**:
+  - Uji unit/integrasi pada `POST /api/v1/tournaments` di backend Go (`tournament_test.go`) dan uji alur pembuatan turnamen di frontend.
 
--- Fungsi trigger universal untuk memperbarui kolom updated_at secara otomatis
-CREATE OR REPLACE FUNCTION set_updated_at_timestamp()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+#### `BUG-003` — Fix Score Display & Input Binding (`score_a` / `score_b`) serta Game Name Resolution (`tournament.game`)
+- **Status**: `DONE`
+- **Prioritas**: `P0`
+- **Dependencies**: `DS-001`
+- **Lokasi Implementasi**:
+  - `frontend/features/bracket/components/match-card.tsx`
+  - `frontend/features/bracket/components/league-match-card.tsx`
+  - `frontend/features/bracket/components/score-modal.tsx`
+  - `frontend/features/bracket/components/standings-table.tsx`
+  - `frontend/app/dashboard/page.tsx`
+  - `frontend/app/dashboard/tournaments/page.tsx`
+  - `frontend/app/dashboard/tournaments/[id]/layout.tsx`
+  - `frontend/app/dashboard/tournaments/[id]/page.tsx`
+  - `frontend/app/(public)/t/[id]/page.tsx`
+- **Alasan & Audit Finding**:
+  Menjawab **CFM-05** dan **CFM-07**. Saat ini seluruh kartu pertandingan dan modal skor mengabaikan `match.score_a` dan `match.score_b` dari backend Go (sehingga selalu tampil `0 - 0`), dan seluruh halaman membaca `tournament.games?.name` alih-alih `tournament.game?.name` (sehingga nama game selalu jatuh ke fallback `'Esports'`).
+- **Deskripsi Perubahan Spesifik**:
+  1. Pada `match-card.tsx`, `league-match-card.tsx`, `score-modal.tsx`, dan fallback `standings-table.tsx`:
+     - Ubah pembacaan skor menjadi:
+       ```ts
+       const scoreA = match.score_a ?? match.participant_a_score ?? match.scores?.a ?? 0;
+       const scoreB = match.score_b ?? match.participant_b_score ?? match.scores?.b ?? 0;
+       ```
+     - Pada `ScoreModal`, tambahkan `useEffect` yang menyinkronkan `scoreA` dan `scoreB` setiap kali `match` atau `isOpen` berubah agar modal selalu menampilkan skor terkini.
+  2. Pada `dashboard/page.tsx`, `dashboard/tournaments/page.tsx`, `dashboard/tournaments/[id]/layout.tsx`, `dashboard/tournaments/[id]/page.tsx`, dan `(public)/t/[id]/page.tsx`:
+     - Ubah resolusi nama game menjadi `const game = tournament.game || tournament.games;` dan tampilkan `game?.name || 'Esports'`.
+- **Acceptance Criteria**:
+  - Skor pertandingan yang tersimpan di database tampil dengan benar pada `MatchCard`, `LeagueMatchCard`, dan `ScoreModal`.
+  - Nama game asli (misal `Valorant`, `Dota 2`, `Mobile Legends: Bang Bang`, `EA Sports FC 24`, `PUBG Mobile`) tampil di seluruh kartu dashboard, header turnamen, dan halaman publik.
+- **Testing Requirements**:
+  - Verifikasi tampilan skor pada turnamen hasil `make seed` dan setelah update skor melalui `ScoreModal`.
 
--- ============================================================================
--- 1. USERS & AUTHENTICATION
--- ============================================================================
-CREATE TABLE users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email VARCHAR(255) NOT NULL,
-    username VARCHAR(50) NOT NULL,
-    password_hash TEXT NOT NULL,
-    first_name VARCHAR(100) NOT NULL,
-    last_name VARCHAR(100) NOT NULL DEFAULT '',
-    phone VARCHAR(30),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT chk_users_email_nonempty CHECK (LENGTH(TRIM(email)) >= 5),
-    CONSTRAINT chk_users_username_format CHECK (username ~ '^[a-zA-Z0-9_.-]{3,50}$')
-);
+#### `BUG-004` — Fix Battle Royale Leaderboard, Round Numbering, Playing Groups & Match Results Pre-population
+- **Status**: `DONE`
+- **Prioritas**: `P0`
+- **Dependencies**: `BUG-001`
+- **Lokasi Implementasi**:
+  - `backend/internal/domain/tournament.go`
+  - `backend/internal/service/standings_service.go`
+  - `frontend/types/api.ts`
+  - `frontend/app/dashboard/tournaments/[id]/bracket/page.tsx`
+  - `frontend/app/(public)/t/[id]/page.tsx`
+  - `frontend/features/bracket/components/br-view.tsx`
+  - `frontend/features/bracket/components/br-leaderboard.tsx`
+  - `frontend/features/bracket/components/br-match-input.tsx`
+  - `frontend/features/bracket/components/br-score-modal.tsx`
+  - `frontend/features/bracket/components/br-group-list.tsx`
+- **Alasan & Audit Finding**:
+  Menjawab **CFM-06** dan **POT-01** / **POT-03**. Mode Battle Royale saat ini tidak meneruskan `br_leaderboard` ke komponen UI, menampilkan `Game #1` untuk semua putaran karena membaca `match.match_number` (bukan `match.round_number`), tidak menampilkan `map_name` & `playing_groups`, serta mengosongkan `BRScoreModal` saat mengedit ulang hasil pertandingan.
+- **Deskripsi Perubahan Spesifik**:
+  1. Di `backend/internal/domain/tournament.go` & `backend/internal/service/standings_service.go`:
+     - Tambahkan `ParticipantID uuid.UUID` (`json:"participant_id"`) dan `ParticipantName string` (`json:"participant_name"`) pada `BRLeaderboardRow`.
+     - Tambahkan field opsional `BRResults []BattleRoyaleMatchResult` (`json:"br_results,omitempty"`) pada `domain.Match`, dan di `GetStageView` (ketika `tournament.FormatType == "BATTLE_ROYALE"`), kelompokkan `brResults` per `MatchID` ke dalam masing-masing `view.Matches[i].BRResults`.
+  2. Di `frontend/app/dashboard/tournaments/[id]/bracket/page.tsx` dan `frontend/app/(public)/t/[id]/page.tsx`:
+     - Teruskan `brLeaderboard={stageViewData?.br_leaderboard}`, `champions={stageViewData?.champions}`, dan `tournament={tournament}` ke `<BattleRoyaleView />`.
+  3. Di `frontend/features/bracket/components/br-view.tsx` & `br-leaderboard.tsx`:
+     - Render `<ChampionsView />` di bagian atas `BattleRoyaleView` jika `champions` sudah tersedia dan seluruh putaran selesai.
+     - Di `BRLeaderboard`, gunakan `brLeaderboard` dari backend Go, tampilkan kolom `#`, `Nama Tim`, `Match`, `WWCD`, `Placement Pts`, `Kill Pts` (`Kills`), dan `TOTAL PTS`, dengan `key={row.teamId}` yang dijamin berisi UUID unik `participant.id`.
+  4. Di `frontend/features/bracket/components/br-match-input.tsx` & `br-score-modal.tsx`:
+     - Gunakan nomor putaran `const gameNum = match.round_number || match.match_number;` sehingga kartu dan modal menampilkan **`Game #1`**, **`Game #2`**, **`Game #3`**, dst., dilengkapi badge nama peta (`match.map_name`, misal `Erangel`, `Miramar`, `Sanhok`) dan daftar grup aktif (`match.playing_groups`).
+     - Di `BRScoreModal`, baca hasil yang sudah tersimpan dari `match.br_results || match.scores?.results || []` agar saat admin mengedit game yang sudah selesai, nilai `placement_rank` dan `kills` sebelumnya langsung terisi di input.
+- **Acceptance Criteria**:
+  - Tabel `Klasemen Global Battle Royale` menampilkan poin, WWCD, dan kills secara akurat tanpa React key warning.
+  - Kartu jadwal Battle Royale menampilkan `Game #1` s/d `Game #N` beserta nama map (`Erangel`, `Miramar`, dll.) dan grup yang bermain.
+  - Membuka kembali `BRScoreModal` pada game yang sudah `COMPLETED` menampilkan kembali peringkat dan jumlah kill yang telah disimpan sebelumnya.
+- **Testing Requirements**:
+  - Jalankan `go test ./internal/service/...` dan verifikasi tampilan turnamen demo Battle Royale (`[Demo] PUBG Mobile Pro League Finals`).
 
--- Case-insensitive unique indexes untuk email dan username
-CREATE UNIQUE INDEX uq_users_email_lower ON users (LOWER(email));
-CREATE UNIQUE INDEX uq_users_username_lower ON users (LOWER(username));
+### Phase 3 — Bracket Visualization & Connector Engine (`BRACKET-*`)
+*Merombak sistem tata letak bracket dan konektor SVG agar akurat untuk Single Elimination, Double Elimination, Bronze Match, dan BYE.*
 
-CREATE TRIGGER trg_users_updated_at
-BEFORE UPDATE ON users
-FOR EACH ROW EXECUTE FUNCTION set_updated_at_timestamp();
+#### `BRACKET-001` — Implementasi Pemisahan `bracket_type` & Layout Presisi untuk Single/Double Elimination, Grand Final & Bronze Match
+- **Status**: `DONE`
+- **Prioritas**: `P0`
+- **Dependencies**: `DS-001`, `BUG-003`
+- **Lokasi Implementasi**:
+  - `frontend/features/bracket/components/bracket-visualizer.tsx`
+  - `frontend/features/bracket/components/match-card.tsx`
+- **Alasan & Audit Finding**:
+  Menjawab **CFM-04**. Mengganti filter warisan `round_number < 0` dan `round_number === 999` dengan `m.bracket_type` (`UPPER`, `LOWER`, `GRAND_FINAL`, `THIRD_PLACE`), serta menambahkan anchor DOM spesifik per slot peserta (`A` dan `B`) pada `MatchCard`.
+- **Deskripsi Perubahan Spesifik**:
+  1. Di `frontend/features/bracket/components/match-card.tsx`:
+     - Tambahkan `id={`match-slot-a-${match.id}`}` pada baris Peserta 1 (Slot A) dan `id={`match-slot-b-${match.id}`}` pada baris Peserta 2 (Slot B).
+     - Tampilkan nomor seed peserta (`#1`..`#N` dari `p1?.seed_number` / `p2?.seed_number`) dalam kotak monospace kecil di sebelah kiri nama peserta.
+     - Tangani tampilan match BYE (`match.is_bye === true`): tampilkan status `"BYE"` di header kartu dan label `"AUTO ADVANCE (BYE)"` pada slot kosong, serta nonaktifkan modal edit skor pada match BYE.
+     - Tambahkan prop opsional `slotAHint?: string` dan `slotBHint?: string` untuk menampilkan petunjuk asal peserta (misal `"Pemenang M#1"`, `"Loser UB R1 #1"`, atau `"Loser Semifinal #1"`) ketika slot masih kosong (`!p1` atau `!p2`).
+  2. Di `frontend/features/bracket/components/bracket-visualizer.tsx`:
+     - Pisahkan daftar match secara eksplisit menggunakan `m.bracket_type`:
+       - `upperMatches = matches.filter((m) => m.bracket_type === 'UPPER')`
+       - `lowerMatches = matches.filter((m) => m.bracket_type === 'LOWER')`
+       - `grandFinalMatches = matches.filter((m) => m.bracket_type === 'GRAND_FINAL')`
+       - `thirdPlaceMatches = matches.filter((m) => m.bracket_type === 'THIRD_PLACE')`
+     - Berikan judul babak yang akurat untuk Upper Bracket (`Babak 1`, `Quarterfinal`, `Semifinal`, `Final Upper Bracket` / `Grand Final`) dan Lower Bracket (`LB Babak 1`, `LB Babak 2 (Drop-Down)`, ..., `Final Lower Bracket`).
+     - Tampilkan `thirdPlaceMatches` pada blok khusus di bawah kartu Final pada Single Elimination apabila `thirdPlaceMatches.length > 0`.
+- **Acceptance Criteria**:
+  - Pada turnamen Double Elimination, Upper Bracket, Lower Bracket, dan Grand Final dirender pada seksi masing-masing tanpa pernah bercampur di kolom yang salah.
+  - Pada turnamen Single Elimination dengan `has_third_place = true`, pertandingan perebutan Juara 3 tampil terpisah dengan label `"BRONZE MATCH • PEREBUTAN JUARA 3"`.
+  - Pertandingan BYE dan slot yang menunggu lawan menampilkan informasi asal progresi yang jelas.
+- **Testing Requirements**:
+  - Verifikasi visual dan struktural pada turnamen Single Elimination (4, 6, 8, 16 peserta + Bronze Match) dan Double Elimination (4, 6, 8 peserta).
 
-CREATE TABLE user_sessions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    token_hash CHAR(64) NOT NULL UNIQUE,
-    user_agent TEXT,
-    ip_address VARCHAR(45),
-    expires_at TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+#### `BRACKET-002` — Implementasi Mesin Konektor SVG Ortogonal Berbasis Slot (`next_match_slot`) & `ResizeObserver`
+- **Status**: `DONE`
+- **Prioritas**: `P0`
+- **Dependencies**: `BRACKET-001`
+- **Lokasi Implementasi**:
+  - `frontend/features/bracket/components/bracket-visualizer.tsx`
+- **Alasan & Audit Finding**:
+  Menjawab **CFM-04** dan **POT-04**. Memperbaiki garis konektor SVG yang sebelumnya tidak terlihat karena `stroke="var(--color-border-default)"` tidak terdefinisi, serta memastikan setiap garis menghubungkan kartu sumber tepat ke baris slot target (`A` atau `B`) tanpa memotong teks atau kartu lain.
+- **Deskripsi Perubahan Spesifik**:
+  1. Di `calculatePaths` (`bracket-visualizer.tsx`):
+     - Untuk setiap match `m` yang memiliki `m.next_match_id`:
+       - Cari elemen sumber `document.getElementById(`match-card-${m.id}`)`.
+       - Cari elemen slot target berdasarkan `m.next_match_slot`:
+         - Jika `m.next_match_slot === 'A'`, targetkan `document.getElementById(`match-slot-a-${m.next_match_id}`)`.
+         - Jika `m.next_match_slot === 'B'`, targetkan `document.getElementById(`match-slot-b-${m.next_match_id}`)`.
+         - Fallback ke `document.getElementById(`match-card-${m.next_match_id}`)`.
+       - Hitung koordinat relatif terhadap `containerRef.current`:
+         - `x1 = sRect.right - cRect.left + container.scrollLeft`
+         - `y1 = sRect.top + sRect.height / 2 - cRect.top + container.scrollTop`
+         - `x2 = tSlotRect.left - cRect.left + container.scrollLeft`
+         - `y2 = tSlotRect.top + tSlotRect.height / 2 - cRect.top + container.scrollTop`
+       - Bangun path SVG ortogonal presisi dengan sudut melengkung (`radius = 6px`) pada titik belok tengah `midX = x1 + (x2 - x1) / 2`.
+       - Tandai status konektor: `isCompleted = m.status === 'COMPLETED' && Boolean(m.winner_id)`, `isBye = m.is_bye`.
+  2. Render `<svg>` dengan 2 layer urutan:
+     - Layer 1: Garis konektor default (`stroke="#2A3447"`, `strokeWidth="2"`, atau `strokeDasharray="4 4"` untuk `isBye`).
+     - Layer 2 (di atas Layer 1): Garis konektor pertandingan yang sudah selesai (`stroke="#10B981"` untuk pemenang reguler, `strokeWidth="2.5"`), ditambah titik terminal `<circle cx={x2 - 2} cy={y2} r="3" fill="#10B981" />` pada titik masuk slot target.
+  3. Pasang `ResizeObserver` pada `containerRef.current` dan panggil `calculatePaths` melalui `requestAnimationFrame` agar posisi garis selalu sinkron saat ukuran layar, font, atau stage berubah.
+- **Acceptance Criteria**:
+  - Seluruh garis konektor terlihat jelas dengan kontras terukur di atas kanvas `#0B0E14`.
+  - Garis dari pertandingan ganjil masuk ke baris Peserta A (atas) dan garis dari pertandingan genap masuk ke baris Peserta B (bawah) pada kartu babak berikutnya.
+  - Jalur kemenangan tim yang sudah menyelesaikan pertandingan ter-highlight dengan warna hijau emerald (`#10B981`).
+  - Tidak ada garis yang bertabrakan dengan teks nama peserta atau skor, baik pada Single Elimination, Double Elimination (termasuk transisi LB ganjil ke LB genap dan menuju Grand Final), maupun ukuran peserta non-pangkat-dua (BYE).
+- **Testing Requirements**:
+  - Uji pada viewport Desktop (`1440px`), Tablet (`768px`), dan Mobile (`375px`) dengan horizontal scroll aktif.
 
-CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);
-CREATE INDEX idx_user_sessions_expires_at ON user_sessions(expires_at);
+### Phase 4 — Hero Section Supported Game Logos, Navbar, Footer & Global AI-Slop Removal (`HERO-*`, `NAV-*`, `UX-*`)
+*Membangun karakter visual halaman utama, mengintegrasikan aset logo 10 game resmi, serta membersihkan pola AI-slop.*
 
-CREATE TABLE password_reset_tokens (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    token_hash CHAR(64) NOT NULL UNIQUE,
-    expires_at TIMESTAMPTZ NOT NULL,
-    used_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+#### `HERO-001` — Pembuatan Aset Logo Vektor 10 Game Resmi & Komponen `GameLogoBadge` dengan Fallback
+- **Status**: `DONE`
+- **Prioritas**: `P1`
+- **Dependencies**: `DS-001`
+- **Lokasi Implementasi**:
+  - `frontend/public/games/mobile-legends.svg` *(File Baru)*
+  - `frontend/public/games/dota-2.svg` *(File Baru)*
+  - `frontend/public/games/league-of-legends.svg` *(File Baru)*
+  - `frontend/public/games/valorant.svg` *(File Baru)*
+  - `frontend/public/games/counter-strike-2.svg` *(File Baru)*
+  - `frontend/public/games/ea-sports-fc.svg` *(File Baru)*
+  - `frontend/public/games/efootball.svg` *(File Baru)*
+  - `frontend/public/games/pubg-mobile.svg` *(File Baru)*
+  - `frontend/public/games/free-fire.svg` *(File Baru)*
+  - `frontend/public/games/apex-legends.svg` *(File Baru)*
+  - `frontend/components/ui/game-logo.tsx` *(File Baru)*
+  - Hapus: `frontend/public/{file,globe,next,vercel,window}.svg`
+- **Alasan & Audit Finding**:
+  Menjawab **IMP-03** dan **Section 7 (Hero Section Redesign — Supported Game Logos)**. Menyediakan representasi visual resmi yang tajam untuk ke-10 game yang ada di `migrations/000002_seed_games.up.sql` beserta mekanisme fallback yang tangguh.
+- **Deskripsi Perubahan Spesifik**:
+  1. Buat 10 file SVG teroptimasi di `frontend/public/games/<slug>.svg` yang merepresentasikan mark/emblem ikonik dari masing-masing game resmi di database (`mobile-legends`, `dota-2`, `league-of-legends`, `valorant`, `counter-strike-2`, `ea-sports-fc`, `efootball`, `pubg-mobile`, `free-fire`, `apex-legends`).
+  2. Bangun komponen `GameLogoBadge` dan konstanta `SUPPORTED_GAMES_META` di `frontend/components/ui/game-logo.tsx` yang menerima `slug?: string`, `name?: string`, `genre?: string`, dan `size?: 'sm' | 'md' | 'lg'`:
+     - Merender `<img>` / SVG dari `/games/${slug}.svg`.
+     - Jika `slug` tidak dikenali atau gambar gagal dimuat (`onError`), otomatis merender badge monogram/ikon genre (`MOBA`, `FPS`, `SPORTS`, `BATTLE_ROYALE`) sehingga tidak pernah menampilkan broken image.
+  3. Hapus 5 file SVG template bawaan Next.js (`file.svg`, `globe.svg`, `next.svg`, `vercel.svg`, `window.svg`) dari `frontend/public/`.
+- **Acceptance Criteria**:
+  - Ke-10 game di `migrations/000002_seed_games.up.sql` memiliki file SVG yang valid di `frontend/public/games/`.
+  - `GameLogoBadge` menampilkan logo yang sesuai untuk ke-10 game dan menampilkan fallback rapi jika diberikan `slug` yang tidak dikenal.
+- **Testing Requirements**:
+  - Verifikasi seluruh 10 file SVG dapat dimuat dengan status `200 OK` dan uji fallback `GameLogoBadge` dengan slug dummy.
 
-CREATE INDEX idx_password_reset_user_id ON password_reset_tokens(user_id);
+#### `HERO-002` — Redesign Hero Section & Interactive Bracket Preview dengan Roster 10 Game Kompetitif
+- **Status**: `DONE`
+- **Prioritas**: `P1`
+- **Dependencies**: `DS-001`, `DS-002`, `HERO-001`
+- **Lokasi Implementasi**:
+  - `frontend/components/landing/hero.tsx`
+  - `frontend/components/landing/bracket-preview.tsx`
+- **Alasan & Audit Finding**:
+  Menjawab **CFM-08** dan **IMP-03**. Menghapus badge dekoratif `"Arsitektur Baru: Next.js 16 + Go + Realtime SSE"` dan merombak Hero section menjadi komposisi art-directed yang menampilkan ke-10 game yang didukung beserta pratinjau bracket interaktif.
+- **Deskripsi Perubahan Spesifik**:
+  1. Di `frontend/components/landing/hero.tsx`:
+     - **Hapus total** blok `<motion.div>` badge `"Arsitektur Baru: Next.js 16 + Go + Realtime SSE"`.
+     - Bangun komposisi Hero baru yang terdiri dari:
+       - **Header Editorial Tajam**: Headline dalam `--font-display` (`Space Grotesk`), subheadline fokus produk, dan tombol CTA utama (`Buat Turnamen Sekarang` dengan `bg-accent` & `Masuk ke Dashboard`).
+       - **Supported Games Showcase Grid (`id="games"`)**: Menampilkan ke-10 game resmi menggunakan `GameLogoBadge` dalam grid terstruktur dengan filter genre (`Semua (10)`, `MOBA (3)`, `FPS (2)`, `SPORTS (2)`, `BATTLE ROYALE (3)`).
+       - Setiap kartu game pada Hero bersifat interaktif: ketika diklik, kartu tersebut menjadi aktif (`border-accent bg-accent/10`) dan memperbarui konteks pratinjau di `BracketPreview` di bawahnya (misal menampilkan simulasi bracket/leaderboard untuk game yang dipilih beserta format yang didukung).
+  2. Di `frontend/components/landing/bracket-preview.tsx`:
+     - Terima prop game aktif dari `Hero` (default: `Valorant` / `Mobile Legends: Bang Bang`), tampilkan logo game pada header pratinjau, gambar garis konektor SVG ortogonal nyata antara kolom Semifinals dan Grand Final pada komponen pratinjau, dan ganti warna hardcoded `#121215`/`#27272A` dengan token permukaan baru.
+- **Acceptance Criteria**:
+  - Tidak ada lagi badge `"Arsitektur Baru: Next.js 16 + Go + Realtime SSE"` di Hero section.
+  - Hero section menampilkan ke-10 logo game resmi yang didukung aplikasi secara seimbang, proporsional, dan responsif di desktop, tablet, dan mobile.
+  - Interaksi memilih game pada Hero langsung memperbarui konteks `BracketPreview`.
+- **Testing Requirements**:
+  - Uji responsivitas Hero section pada layar `375px`, `768px`, dan `1440px`, serta uji interaksi pemilihan game dan filter genre.
 
--- ============================================================================
--- 2. MASTER GAMES
--- ============================================================================
-CREATE TABLE games (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    slug VARCHAR(64) NOT NULL UNIQUE,
-    name VARCHAR(120) NOT NULL,
-    genre VARCHAR(32) NOT NULL CHECK (
-        genre IN ('MOBA', 'FPS', 'SPORTS', 'BATTLE_ROYALE')
-    ),
-    platform VARCHAR(64) NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+#### `NAV-001` — Redesign Navbar & Footer Produk (Hapus Link GitHub & Perbaiki Navigasi)
+- **Status**: `DONE`
+- **Prioritas**: `P1`
+- **Dependencies**: `DS-001`, `DS-002`, `HERO-001`
+- **Lokasi Implementasi**:
+  - `frontend/components/landing/navbar.tsx`
+  - `frontend/components/landing/footer.tsx`
+- **Alasan & Audit Finding**:
+  Menjawab **CFM-09** dan **IMP-04**. Memperbaiki hierarki Navbar, menambahkan navigasi mobile, menghapus link menyesatkan `"Bagan Publik"` (`/login`), dan menghapus link `GitHub` (`https://github.com`) dari Footer.
+- **Deskripsi Perubahan Spesifik**:
+  1. Di `frontend/components/landing/navbar.tsx`:
+     - Ganti menu navigasi menjadi `#games` (`Game Didukung`), `#features` (`Format & Kapabilitas`), dan `#how-it-works` (`Alur Kerja`).
+     - Tambahkan state `mobileMenuOpen` dan tombol toggle hamburger (`Menu` / `X`) untuk layar `< 768px` sehingga pengguna mobile dapat mengakses seluruh navigasi dan tombol autentikasi.
+     - Gunakan tombol CTA `bg-accent hover:bg-accent-hover text-white` untuk aksi utama (`Buat Turnamen` / `Dashboard`).
+  2. Di `frontend/components/landing/footer.tsx`:
+     - **Hapus link `<a href="https://github.com">GitHub</a>`** dan teks `"Modern Esports Tournament Engine"`.
+     - Bangun layout footer 3 kolom yang proporsional:
+       - Kolom 1: Brand Gridify & deskripsi singkat platform manajemen turnamen.
+       - Kolom 2: 5 Format Kompetisi Resmi (`Single Elimination`, `Double Elimination`, `Round Robin League`, `Hybrid UCL`, `Battle Royale`).
+       - Kolom 3: Navigasi Produk (`Game Didukung`, `Fitur Utama`, `Alur Kerja`, `Masuk Organizer`, `Daftar Akun`).
+- **Acceptance Criteria**:
+  - Tidak ada link ke `github.com` atau halaman fiktif di Footer maupun Navbar.
+  - Navbar berfungsi penuh di desktop dan mobile (termasuk drawer menu mobile) serta menyesuaikan tombol aksi berdasarkan status login `user`.
+- **Testing Requirements**:
+  - Verifikasi seluruh link di Navbar dan Footer mengarah ke route atau anchor ID yang valid.
 
--- ============================================================================
--- 3. TOURNAMENTS
--- ============================================================================
-CREATE TABLE tournaments (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    game_id UUID NOT NULL REFERENCES games(id) ON DELETE RESTRICT,
-    title VARCHAR(160) NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    format_type VARCHAR(32) NOT NULL CHECK (
-        format_type IN (
-            'SINGLE_ELIMINATION',
-            'DOUBLE_ELIMINATION',
-            'ROUND_ROBIN',
-            'HYBRID_UCL',
-            'BATTLE_ROYALE'
-        )
-    ),
-    status VARCHAR(20) NOT NULL DEFAULT 'DRAFT' CHECK (
-        status IN ('DRAFT', 'ONGOING', 'COMPLETED')
-    ),
-    best_of SMALLINT NOT NULL DEFAULT 1 CHECK (best_of IN (1, 3, 5, 7)),
-    home_away BOOLEAN NOT NULL DEFAULT FALSE,
-    points_per_win SMALLINT NOT NULL DEFAULT 3 CHECK (points_per_win >= 1),
-    points_per_draw SMALLINT NOT NULL DEFAULT 1 CHECK (points_per_draw >= 0),
-    has_third_place BOOLEAN NOT NULL DEFAULT FALSE,
-    br_total_matches SMALLINT NOT NULL DEFAULT 6 CHECK (br_total_matches BETWEEN 1 AND 24),
-    br_max_teams_per_match SMALLINT NOT NULL DEFAULT 16 CHECK (br_max_teams_per_match BETWEEN 4 AND 64),
-    br_point_system JSONB NOT NULL DEFAULT '{"killPoint": 1, "placementPoints": {"1": 10, "2": 6, "3": 5, "4": 4, "5": 3, "6": 2, "7": 1, "8": 1}}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT chk_tournaments_title_len CHECK (LENGTH(TRIM(title)) >= 3)
-);
+#### `UX-001` — Eliminasi Pola AI-Slop Global pada Landing Page, Champions Podium & Realtime Indicator
+- **Status**: `DONE`
+- **Prioritas**: `P1`
+- **Dependencies**: `DS-001`, `NAV-001`, `HERO-002`
+- **Lokasi Implementasi**:
+  - `frontend/app/page.tsx`
+  - `frontend/components/landing/features.tsx`
+  - `frontend/components/landing/how-it-works.tsx`
+  - `frontend/features/bracket/components/champions-view.tsx`
+  - `frontend/components/providers/tournament/realtime-listener.tsx`
+- **Alasan & Audit Finding**:
+  Menjawab **CFM-08** dan **IMP-05**. Membersihkan repetisi kartu dekoratif, pill promosi generik, animasi Framer Motion yang berlebihan, dan floating pill SSE yang menghalangi sudut layar.
+- **Deskripsi Perubahan Spesifik**:
+  1. Di `frontend/components/landing/features.tsx`:
+     - Ganti 6 kartu template seragam menjadi layout **Grid Kapabilitas Operasional** yang menyoroti 5 format kompetisi beserta aturan teknisnya (BO1/BO3/BO5, Home & Away, Cross-Seeding UCL, WWCD & Kill Points BR, serta QR Spectator Broadcast) tanpa menyebutkan istilah internal database (`PostgreSQL 17`, `owner_id`, `Go engine`).
+  2. Di `frontend/components/landing/how-it-works.tsx`:
+     - Ubah 3 kartu rata tengah menjadi **3-Step Operational Pipeline** rata kiri dengan indikator langkah monospace `STEP 01`–`STEP 03` dan detail alur kerja nyata.
+  3. Di `frontend/app/page.tsx`:
+     - Hapus pill `<Trophy /> SIAP MEMULAI KOMPETISI` dan ubah seksi CTA bawah menjadi *action banner* horizontal yang bersih.
+  4. Di `frontend/features/bracket/components/champions-view.tsx`:
+     - Hapus pill `"PODIUM JUARA TURNAMEN"` dan balok tinggi `h-28` bertuliskan angka `2, 1, 3`.
+     - Desain ulang menjadi **Compact Championship Podium Banner** horizontal 3-kartu (Juara 1 dengan aksen emas `#F59E0B`, Juara 2 perak, Juara 3 perunggu) yang proporsional dan langsung menyatu di atas kanvas bracket/klasemen.
+  5. Di `frontend/components/providers/tournament/realtime-listener.tsx`:
+     - Tambahkan prop `inline?: boolean` (default `true` ketika dipasang di header, atau render badge status tipis yang terintegrasi di bar atas halaman bracket dan halaman publik penonton) sehingga tidak lagi melayang menutupi sudut kanan bawah layar.
+- **Acceptance Criteria**:
+  - Seluruh elemen AI-slop yang teridentifikasi pada **Section 6.1** telah bersih dari codebase.
+  - `ChampionsView` tampil proporsional di semua format kompetisi tanpa memakan ruang vertikal berlebihan.
+  - Indikator status koneksi `LIVE` terintegrasi rapi tanpa menutupi konten halaman.
+- **Testing Requirements**:
+  - Audit visual pada halaman `/`, `/dashboard/tournaments/[id]/bracket`, dan `/t/[id]`.
 
-CREATE INDEX idx_tournaments_owner_status ON tournaments(owner_id, status, created_at DESC);
-CREATE INDEX idx_tournaments_game_id ON tournaments(game_id);
+### Phase 5 — Global Page-by-Page UI/UX Consistency & Polish (`UX-002` & `UX-003`)
+*Menyelaraskan seluruh halaman autentikasi, dashboard, pembuatan turnamen, manajemen peserta, dan halaman penonton publik.*
 
-CREATE TRIGGER trg_tournaments_updated_at
-BEFORE UPDATE ON tournaments
-FOR EACH ROW EXECUTE FUNCTION set_updated_at_timestamp();
+#### `UX-002` — Penyelarasan Halaman Auth (`login`, `register`, `forgot-password`, `update-password`) & Dashboard Shell
+- **Status**: `DONE`
+- **Prioritas**: `P1`
+- **Dependencies**: `DS-001`, `DS-002`, `DS-003`
+- **Lokasi Implementasi**:
+  - `frontend/app/login/page.tsx`
+  - `frontend/app/register/page.tsx`
+  - `frontend/app/forgot-password/page.tsx`
+  - `frontend/app/update-password/page.tsx`
+  - `frontend/app/dashboard/layout.tsx`
+  - `frontend/app/dashboard/page.tsx`
+  - `frontend/app/dashboard/tournaments/page.tsx`
+  - `frontend/app/dashboard/profile/page.tsx`
+- **Alasan & Audit Finding**:
+  Menjawab **Section 8 (Global UI/UX Consistency Audit)**. Memastikan seluruh halaman autentikasi dan dashboard konsisten dengan identitas visual baru, mengintegrasikan `GameLogoBadge` pada daftar turnamen, dan memperbaiki ergonomi tombol aksi di layar sentuh.
+- **Deskripsi Perubahan Spesifik**:
+  1. Pada `login/page.tsx`, `register/page.tsx`, `forgot-password/page.tsx`, dan `update-password/page.tsx`:
+     - Gunakan wrapper input password yang konsisten sehingga tombol toggle mata (`Eye`/`EyeOff`) selalu berada tepat di tengah vertikal field input (`top-1/2 -translate-y-1/2`).
+     - Terapkan `font-display` pada judul halaman dan identitas brand Gridify.
+  2. Pada `dashboard/layout.tsx`:
+     - Perjelas indikator navigasi aktif di sidebar dengan garis aksen kiri `border-l-2 border-accent bg-surface-elevated text-text-primary font-semibold`.
+  3. Pada `dashboard/page.tsx` dan `dashboard/tournaments/page.tsx`:
+     - Tampilkan `GameLogoBadge` (`size="sm"`) di samping nama game pada setiap kartu turnamen.
+     - Ubah visibilitas `DeleteTournamentButton` agar pada layar mobile/touch tetap dapat diakses (`opacity-100 sm:opacity-0 sm:group-hover:opacity-100`).
+     - Tambahkan tombol submit `"Cari"` eksplisit di dalam bar pencarian `dashboard/tournaments/page.tsx` agar pengguna mobile maupun desktop dapat mengeksekusi pencarian dengan mudah.
+- **Acceptance Criteria**:
+  - Halaman login, register, forgot-password, dan update-password tampil seragam dan rapi.
+  - Kartu turnamen di Dashboard dan Turnamen Saya menampilkan logo dan nama game yang benar.
+- **Testing Requirements**:
+  - Uji navigasi sidebar, pencarian turnamen, dan responsivitas kartu di mobile & desktop.
 
--- ============================================================================
--- 4. STAGES
--- ============================================================================
-CREATE TABLE stages (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tournament_id UUID NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
-    name VARCHAR(100) NOT NULL,
-    type VARCHAR(32) NOT NULL CHECK (
-        type IN (
-            'SINGLE_ELIMINATION',
-            'DOUBLE_ELIMINATION',
-            'ROUND_ROBIN',
-            'LEADERBOARD'
-        )
-    ),
-    sequence_order SMALLINT NOT NULL CHECK (sequence_order >= 1),
-    status VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (
-        status IN ('PENDING', 'ONGOING', 'COMPLETED')
-    ),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (tournament_id, sequence_order)
-);
+#### `UX-003` — Redesign Workspace Turnamen (`[id]/*`), Pemilih Game Visual di Create Form & Halaman Publik Penonton (`/t/[id]`)
+- **Status**: `DONE`
+- **Prioritas**: `P1`
+- **Dependencies**: `BUG-002`, `BUG-003`, `BUG-004`, `HERO-001`, `UX-001`
+- **Lokasi Implementasi**:
+  - `frontend/features/tournaments/components/create-tournament-form.tsx`
+  - `frontend/app/dashboard/tournaments/[id]/layout.tsx`
+  - `frontend/app/dashboard/tournaments/[id]/page.tsx`
+  - `frontend/app/dashboard/tournaments/[id]/bracket/page.tsx`
+  - `frontend/app/dashboard/tournaments/[id]/participants/page.tsx`
+  - `frontend/app/(public)/t/[id]/page.tsx`
+- **Alasan & Audit Finding**:
+  Menjawab **Section 6, 7, dan 8**. Mengintegrasikan logo game pada alur pemilihan game di `CreateTournamentForm`, memperbaiki header workspace turnamen, dan merombak header halaman penonton `/t/[id]` agar fokus pada penyajian bagan/klasemen.
+- **Deskripsi Perubahan Spesifik**:
+  1. Di `frontend/features/tournaments/components/create-tournament-form.tsx`:
+     - Ganti atau lengkapi pemilihan game dengan **Interactive Game Selector Grid** yang menampilkan `GameLogoBadge`, nama game, badge genre (`MOBA`, `FPS`, `SPORTS`, `BATTLE_ROYALE`), dan platform untuk ke-10 game, dengan state terpilih yang jelas (`border-2 border-accent bg-accent/12`).
+  2. Di `frontend/app/dashboard/tournaments/[id]/layout.tsx` dan `page.tsx`:
+     - Tampilkan `GameLogoBadge` di header detail turnamen bersama nama game (`tournament.game?.name`) dan format kompetisi.
+  3. Di `frontend/app/(public)/t/[id]/page.tsx`:
+     - Ganti Hero Banner tengah yang terlalu memakan tempat (dan hapus pill `"SPECTATOR LIVE VIEW"`) menjadi **Compact Broadcast Header** yang menampilkan `GameLogoBadge`, judul turnamen, status badge, jumlah peserta, tanggal, indikator `LIVE SSE` inline, dan tombol `Bagikan` (QR Code & Copy Link).
+     - Periksa apakah pengguna yang membuka `/t/[id]` sedang login (`apiClient.users.getMe()`): jika ya, tampilkan tombol `"Dashboard Organizer"` (`/dashboard/tournaments/${id}`), jika tidak, tampilkan `"Masuk Organizer"` (`/login`).
+- **Acceptance Criteria**:
+  - Pemilihan game saat membuat turnamen menampilkan logo dan genre game secara visual dan langsung memfilter format kompetisi yang relevan.
+  - Halaman publik `/t/[id]` langsung menampilkan bagan/klasemen di paruh atas layar tanpa terhalang banner raksasa atau floating pill.
+- **Testing Requirements**:
+  - Verifikasi alur pembuatan turnamen dan tampilan `/t/[id]` untuk seluruh 5 format kompetisi.
 
-CREATE INDEX idx_stages_tournament_order ON stages(tournament_id, sequence_order);
+### Phase 6 — End-to-End Validation, Regression Testing & Build Verification (`TEST-*`)
+*Memastikan kualitas akhir kode, kelulusan seluruh unit/integration test Go, dan kelulusan strict build Next.js.*
 
--- ============================================================================
--- 5. PARTICIPANTS
--- ============================================================================
-CREATE TABLE participants (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tournament_id UUID NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
-    name VARCHAR(120) NOT NULL,
-    contact_info VARCHAR(160),
-    seed_number INT NOT NULL DEFAULT 1 CHECK (seed_number >= 1),
-    group_name VARCHAR(32),
-    is_verified BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT chk_participants_name_nonempty CHECK (LENGTH(TRIM(name)) >= 1)
-);
+#### `TEST-001` — Verifikasi Unit & Integration Tests Backend Go + Kontrak DTO Standings/BR/Tournament
+- **Status**: `DONE`
+- **Prioritas**: `P0`
+- **Dependencies**: `BUG-001`, `BUG-002`, `BUG-004`
+- **Lokasi Implementasi**:
+  - `backend/internal/service/standings_service_test.go`
+  - `backend/internal/transport/http/handler/tournament_test.go`
+  - `backend/internal/transport/http/handler/bracket_match_test.go`
+- **Alasan & Audit Finding**:
+  Memastikan penambahan field `participant_id`, `participant_name`, `br_results`, dan dukungan payload pembuatan turnamen teruji secara otomatis tanpa regresi.
+- **Deskripsi Perubahan Spesifik**:
+  1. Tambahkan asersi di `standings_service_test.go` bahwa setiap `StandingRow` dan `BRLeaderboardRow` yang dihasilkan memiliki `ParticipantID == Participant.ID` (bukan `uuid.Nil`) dan `ParticipantName == Participant.Name` (tidak kosong).
+  2. Tambahkan pengujian di `tournament_test.go` untuk memverifikasi `POST /api/v1/tournaments` baik dengan field tingkat atas (`best_of`, `home_away`, `has_third_place`, `br_total_matches`) maupun dengan objek `match_rules`.
+- **Acceptance Criteria**:
+  - `go test -v -race ./...` di direktori `backend/` lulus 100% (0 kegagalan).
+- **Testing Requirements**:
+  - Eksekusi `cd backend && go test -v ./...`.
 
-CREATE INDEX idx_participants_tournament_seed ON participants(tournament_id, seed_number, created_at);
-CREATE INDEX idx_participants_tournament_group ON participants(tournament_id, group_name);
+#### `TEST-002` — Verifikasi TypeScript Strict Build, Linting & Audit Console Error / Visual Regression di Frontend
+- **Status**: `DONE`
+- **Prioritas**: `P0`
+- **Dependencies**: `DS-003`, `BRACKET-002`, `UX-002`, `UX-003`, `TEST-001`
+- **Lokasi Implementasi**:
+  - `frontend/`
+- **Alasan & Audit Finding**:
+  Memastikan seluruh perubahan di `frontend/` lulus pemeriksaan tipe TypeScript ketat (`ignoreBuildErrors: false`), bebas dari React console warnings, dan memenuhi seluruh kriteria penerimaan produk.
+- **Deskripsi Perubahan Spesifik**:
+  1. Jalankan `npx tsc --noEmit` dan `npm run build` di `frontend/`.
+  2. Verifikasi tidak ada lagi referensi ke variabel CSS yang tidak terdefinisi (`--color-border-default` lama) atau properti DTO yang salah (`row.participant_id` tanpa fallback `row.participant?.id`, `match.participant_a_score` tanpa `match.score_a`, `tournament.games` tanpa `tournament.game`).
+- **Acceptance Criteria**:
+  - `npx tsc --noEmit` dan `npm run build` selesai dengan exit code `0` dan 0 warning/error.
+  - Seluruh halaman publik dan dashboard bebas dari React Unique Key warning di console browser.
+- **Testing Requirements**:
+  - Eksekusi `cd frontend && npx tsc --noEmit && npm run build`.
 
-CREATE TRIGGER trg_participants_updated_at
-BEFORE UPDATE ON participants
-FOR EACH ROW EXECUTE FUNCTION set_updated_at_timestamp();
+## 12. Testing & Validation Strategy
 
--- ============================================================================
--- 6. MATCHES
--- ============================================================================
-CREATE TABLE matches (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tournament_id UUID NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
-    stage_id UUID NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
-    bracket_type VARCHAR(20) NOT NULL DEFAULT 'UPPER' CHECK (
-        bracket_type IN (
-            'UPPER',
-            'LOWER',
-            'GRAND_FINAL',
-            'THIRD_PLACE',
-            'ROUND_ROBIN',
-            'BATTLE_ROYALE'
-        )
-    ),
-    round_number INT NOT NULL CHECK (round_number >= 1),
-    match_number INT NOT NULL CHECK (match_number >= 1),
-    group_label VARCHAR(32),
-    participant_a_id UUID REFERENCES participants(id) ON DELETE SET NULL,
-    participant_b_id UUID REFERENCES participants(id) ON DELETE SET NULL,
-    score_a INT NOT NULL DEFAULT 0 CHECK (score_a >= 0),
-    score_b INT NOT NULL DEFAULT 0 CHECK (score_b >= 0),
-    winner_id UUID REFERENCES participants(id) ON DELETE SET NULL,
-    is_bye BOOLEAN NOT NULL DEFAULT FALSE,
-    status VARCHAR(20) NOT NULL DEFAULT 'SCHEDULED' CHECK (
-        status IN ('SCHEDULED', 'ONGOING', 'COMPLETED')
-    ),
-    next_match_id UUID REFERENCES matches(id) ON DELETE SET NULL,
-    next_match_slot CHAR(1) CHECK (next_match_slot IN ('A', 'B')),
-    loser_next_match_id UUID REFERENCES matches(id) ON DELETE SET NULL,
-    loser_next_match_slot CHAR(1) CHECK (loser_next_match_slot IN ('A', 'B')),
-    playing_groups TEXT[] NOT NULL DEFAULT '{}',
-    map_name VARCHAR(80),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_matches_stage_bracket_round_num UNIQUE (stage_id, bracket_type, round_number, match_number),
-    CONSTRAINT chk_matches_distinct_participants CHECK (
-        participant_a_id IS NULL OR participant_b_id IS NULL OR participant_a_id <> participant_b_id
-    ),
-    CONSTRAINT chk_matches_valid_winner CHECK (
-        winner_id IS NULL OR winner_id = participant_a_id OR winner_id = participant_b_id
-    )
-);
+1. **Static & Type-Safety Verification (`frontend/`)**:
+   - Menjalankan `npx tsc --noEmit` dengan opsi `strict: true` dan `ignoreBuildErrors: false` di `next.config.ts`.
+   - Memastikan seluruh komponen yang mengonsumsi `StandingRow`, `BRLeaderboardRow`, `Match`, `Tournament`, dan `Game` selaras dengan struktur JSON dari Go API.
+2. **Backend Automated Test Suite (`backend/`)**:
+   - Menjalankan seluruh suite pengujian Go (`go test -v ./internal/...`) yang mencakup:
+     - `internal/service/bracket/*_test.go`: Pengujian matematika seeding, Single Elimination (termasuk BYE & Bronze Match), Double Elimination (termasuk BYE & drop-down LB), Round Robin (1-leg & 2-leg), dan Battle Royale.
+     - `internal/service/standings_service_test.go`: Pengujian kalkulasi klasemen, leaderboard BR, podium juara, serta keberadaan field `participant_id` dan `participant_name`.
+     - `internal/transport/http/handler/*_test.go`: Pengujian autentikasi, otorisasi kepemilikan, pembuatan turnamen, dan pembaruan skor.
+3. **Manual & Visual Verification Scenarios**:
+   - **Skenario 1 (StandingsTable & Hybrid UCL)**: Buka turnamen Round Robin & Hybrid UCL → pastikan tidak ada error `Each child in a list should have a unique "key" prop` di console, seluruh nama tim muncul, dan 2 tim teratas di Grup A & Grup B memiliki badge `Q`.
+   - **Skenario 2 (Create Tournament & Format Selection)**: Buka `/dashboard/create` → pilih salah satu dari 10 game → klik masing-masing format kompetisi → pastikan kartu yang dipilih menampilkan border Crimson Valor `2px`, latar ter-highlight, dan indikator centang aktif → klik `"Buat Turnamen Sekarang"` → pastikan berhasil diarahkan ke halaman detail turnamen baru (`201 Created`).
+   - **Skenario 3 (Bracket Connectors & Progression)**: Buka turnamen Single Elimination (dengan Bronze Match) dan Double Elimination → pastikan Upper Bracket, Lower Bracket, Grand Final, dan Bronze Match berada di seksi yang benar → pastikan garis konektor SVG terlihat jelas dan menunjuk tepat ke baris Slot A (atas) atau Slot B (bawah) pada kartu match tujuan.
+   - **Skenario 4 (Hero, Navbar & Footer)**: Buka `/` pada viewport desktop dan mobile → pastikan badge `"Arsitektur Baru: Next.js 16 + Go + Realtime SSE"` sudah tidak ada → pastikan 10 logo game resmi tampil rapi dan interaktif → pastikan menu mobile berfungsi dan link `GitHub` sudah dihapus dari Footer.
 
-CREATE INDEX idx_matches_stage_order ON matches(stage_id, bracket_type, round_number, match_number);
-CREATE INDEX idx_matches_tournament_upcoming ON matches(tournament_id, status, round_number, match_number)
-    WHERE status <> 'COMPLETED';
-CREATE INDEX idx_matches_next_match_id ON matches(next_match_id) WHERE next_match_id IS NOT NULL;
-CREATE INDEX idx_matches_loser_next_match_id ON matches(loser_next_match_id) WHERE loser_next_match_id IS NOT NULL;
+## 13. Risk Register
 
-CREATE TRIGGER trg_matches_updated_at
-BEFORE UPDATE ON matches
-FOR EACH ROW EXECUTE FUNCTION set_updated_at_timestamp();
-
--- ============================================================================
--- 7. BATTLE ROYALE MATCH RESULTS
--- ============================================================================
-CREATE TABLE battle_royale_match_results (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    match_id UUID NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
-    participant_id UUID NOT NULL REFERENCES participants(id) ON DELETE CASCADE,
-    placement_rank SMALLINT NOT NULL CHECK (placement_rank >= 1),
-    kills SMALLINT NOT NULL DEFAULT 0 CHECK (kills >= 0),
-    placement_points INT NOT NULL DEFAULT 0,
-    kill_points INT NOT NULL DEFAULT 0,
-    total_points INT NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (match_id, participant_id)
-);
-
-CREATE INDEX idx_br_results_match_rank ON battle_royale_match_results(match_id, placement_rank);
-CREATE INDEX idx_br_results_participant_id ON battle_royale_match_results(participant_id);
-
-CREATE TRIGGER trg_br_results_updated_at
-BEFORE UPDATE ON battle_royale_match_results
-FOR EACH ROW EXECUTE FUNCTION set_updated_at_timestamp();
-```
-
-### 7.4 Manajemen Migrasi Skema, Seeding & Transaction Boundaries
-Karena proyek menggunakan database PostgreSQL baru yang murni (tanpa migrasi dari Supabase), siklus hidup database dikelola sepenuhnya melalui tiga mekanisme berikut:
-
-1. **Versioned SQL Migrations (`golang-migrate`)**:
-   - Seluruh perubahan skema disimpan di folder `migrations/` dengan pasangan `.up.sql` dan `.down.sql`.
-   - `000001_init_schema.up.sql` membangun ke-7 tabel inti, fungsi trigger `set_updated_at_timestamp()`, indeks, dan constraint.
-   - `000002_seed_games.up.sql` mengisi daftar master game awal (`Mobile Legends: Bang Bang`, `Dota 2`, `League of Legends`, `Valorant`, `Counter-Strike 2`, `EA Sports FC`, `eFootball`, `PUBG Mobile`, `Free Fire`, `Apex Legends`) sehingga fitur pembuatan turnamen langsung siap digunakan begitu migrasi dijalankan.
-2. **Database Seeder untuk Development & Pengujian (`backend/cmd/seed/main.go`)**:
-   - Menyediakan CLI `make seed` yang membuat akun organizer contoh beserta sampel turnamen untuk kelima format (`SINGLE_ELIMINATION`, `DOUBLE_ELIMINATION`, `ROUND_ROBIN`, `HYBRID_UCL`, `BATTLE_ROYALE`) secara bersih di database lokal.
-3. **Transaction Boundaries (`WithTx`) & Row-Level Locking**:
-   - Setiap operasi yang memodifikasi lebih dari satu tabel atau baris wajib berjalan di dalam satu transaksi PostgreSQL (`pgx.BeginTx`):
-     - **Pembuatan Turnamen**: `INSERT INTO tournaments` + `INSERT INTO stages` dalam satu transaksi.
-     - **Generasi / Reset Bracket**: `DELETE FROM matches WHERE stage_id = $1` + *batch insert* (`pgx.CopyFrom` / multi-row `INSERT`) seluruh match baru + *linking* `next_match_id` & `loser_next_match_id` dalam satu transaksi. Jika langkah mana pun gagal, seluruh perubahan di-*rollback* sehingga bracket lama tidak pernah hilang setengah jalan.
-     - **Update Skor & Progresi Match**: Mengunci baris match saat ini dan match hilir dengan `SELECT ... FOR UPDATE`, memperbarui skor & pemenang, memindahkan pemenang ke `next_match_id` dan yang kalah ke `loser_next_match_id`, serta memperbarui status stage/turnamen jika seluruh match selesai—semuanya dalam satu transaksi atomik.
-
-## 8. Security & Quality Improvements
-
-1. **Authentication & Password Hashing Murni (Argon2id)**:
-   - Menggunakan **Argon2id** (`golang.org/x/crypto/argon2`, parameter: memory 64MB, iterations 3, parallelism 2, salt acak 16-byte) untuk seluruh password pengguna pada database PostgreSQL baru.
-   - Sesi disimpan menggunakan **HttpOnly, Secure, SameSite=Lax Cookie** (`gridify_session`) dengan token acak 32-byte (`crypto/rand`) yang disimpan di tabel `user_sessions` hanya dalam bentuk SHA-256 hash (`token_hash`).
-   - Kebijakan password ditingkatkan menjadi minimal 8 karakter.
-2. **Centralized Ownership & Authorization Middleware**:
-   - Seluruh endpoint mutasi di bawah `/api/v1/tournaments/:id/*` wajib melewati guard kepemilikan di layer service Go (`VerifyTournamentOwnership(ctx, tournamentID, userID)`) sebelum mengeksekusi logika bisnis apa pun.
-   - Menghapus total celah IDOR yang sebelumnya ditemukan pada `bracket-actions.ts`, `match-actions.ts`, `stage-actions.ts`, dan `participant-actions.ts`.
-3. **Input Validation Berlapis**:
-   - **Backend Go**: Setiap payload JSON divalidasi ketatnya (format UUID, panjang string, batas skor ≥ 0, validasi enum format/status) dan menolak field yang tidak dikenal (`DisallowUnknownFields`).
-   - **Frontend Next.js**: Validasi skema `zod` di sisi klien untuk memberikan pesan kesalahan langsung per field tanpa menggantikan validasi backend.
-4. **Eliminasi User Enumeration & Open Redirect**:
-   - Endpoint `POST /api/v1/auth/login` mengembalikan pesan generik `"Email/username atau password salah"` (`401 Unauthorized`) baik ketika username tidak ditemukan maupun ketika password salah, dengan waktu respons yang seragam.
-   - Redirect setelah login hanya mengizinkan path internal yang diawali `/` dan tidak diawali `//` atau `http`.
-5. **Secrets Management, Structured Logging & Observability**:
-   - Seluruh konfigurasi sensitif (`DATABASE_URL`, `SESSION_SECRET`, `SMTP_URL`, `CORS_ALLOWED_ORIGINS`) dibaca dari environment variables dan divalidasi saat startup di `internal/config/config.go` (aplikasi gagal start secara eksplisit jika variabel wajib kosong).
-   - Menggunakan `log/slog` (JSON handler di production) yang mencatat `request_id`, `method`, `path`, `status`, `duration_ms`, dan `user_id` pada setiap HTTP request.
-
-## 9. Phased Implementation Plan (Strategi Migrasi & Urutan Eksekusi)
-
-### 9.1 Keputusan Strategi Migrasi: Clean-Slate PostgreSQL & Incremental Cutover
-Berdasarkan hasil audit dan keputusan menggunakan database PostgreSQL baru yang murni:
-- Kita membangun fondasi `migrations/` (PostgreSQL 17 murni) dan `backend/` (Go) secara berdampingan terlebih dahulu pada Fase 1–4 hingga seluruh unit test algoritma bracket, transaksi database, dan kontrak API lulus 100%.
-- Selanjutnya pada Fase 5, kita merombak UI/UX dan memutus seluruh ketergantungan Supabase di Next.js (`@supabase/ssr`, `@supabase/supabase-js`, `lib/supabase/*`), diikuti pengujian integrasi menyeluruh pada Fase 6.
-
-### Phase 1 — Foundation, Repository Layout & Pure PostgreSQL Schema
-**Tujuan**: Menyiapkan struktur monorepo, skema PostgreSQL 17 murni yang ternormalisasi, migrasi awal, seed master game, dan kerangka dasar server Go tanpa merusak kode yang ada.
-- **Dependensi Fase**: Tidak ada (Fase awal).
-- **Hasil yang Diharapkan**: PostgreSQL 17 berjalan dengan skema baru lengkap beserta seluruh constraint/trigger, migrasi `up`/`down` berfungsi, dan server Go dapat menyala serta melayani `/healthz` dan `/readyz`.
-
-#### Daftar Task Phase 1
-- **`ARCH-001` — Restrukturisasi Workspace & Konfigurasi Docker/Makefile**
-  - **Apa yang diubah**: Menata struktur direktori `backend/`, `frontend/`, `migrations/`, `contracts/`, `docker-compose.yml`, `.env.example`, dan `Makefile`.
-  - **Alasan**: Memisahkan presentation layer Next.js dari backend Go dan menyediakan environment PostgreSQL 17 lokal yang reproduksibel.
-  - **Lokasi implementasi**: Root project (`Makefile`, `docker-compose.yml`, `.env.example`, `backend/go.mod`, `frontend/`).
-  - **Dependensi**: Tidak ada.
-  - **Acceptance Criteria**: `docker compose up -d postgres` menjalankan PostgreSQL 17; `make help` menampilkan target `dev-db`, `migrate-up`, `migrate-down`, `seed`, `run-backend`, `run-frontend`, `test`.
-- **`DB-001` — Pembuatan Migrasi Skema Murni PostgreSQL (`000001_init_schema`)**
-  - **Apa yang diubah**: Membuat file `migrations/000001_init_schema.up.sql` dan `000001_init_schema.down.sql` yang mendefinisikan fungsi trigger `set_updated_at_timestamp()` serta tabel `users`, `user_sessions`, `password_reset_tokens`, `games`, `tournaments`, `stages`, `participants`, `matches`, dan `battle_royale_match_results` beserta seluruh `FOREIGN KEY ON DELETE CASCADE`, `CHECK` constraints, dan indeks.
-  - **Alasan**: Membangun database PostgreSQL baru yang murni sesuai hasil audit untuk menggantikan skema implisit `types/database.ts` dan menghilangkan penggunaan JSONB `matches.scores` maupun angka ajaib `round_number`.
-  - **Lokasi implementasi**: `migrations/000001_init_schema.up.sql` (File Baru), `migrations/000001_init_schema.down.sql` (File Baru).
-  - **Dependensi**: `ARCH-001`.
-  - **Acceptance Criteria**: Migrasi `up` dan `down` dapat dijalankan berulang kali tanpa error; seluruh `FOREIGN KEY`, `UNIQUE`, dan `CHECK` constraint (`chk_matches_distinct_participants`, `chk_matches_valid_winner`, dll.) aktif di PostgreSQL.
-- **`DB-002` — Pembuatan Migrasi Seed Master Data Game (`000002_seed_games`)**
-  - **Apa yang diubah**: Membuat migrasi seed untuk tabel `games` yang mencakup keempat genre yang didukung (`MOBA`, `FPS`, `SPORTS`, `BATTLE_ROYALE` — Mobile Legends, Dota 2, League of Legends, Valorant, Counter-Strike 2, EA Sports FC, eFootball, PUBG Mobile, Free Fire, Apex Legends).
-  - **Alasan**: Form pembuatan turnamen (`create-tournament-form.tsx`) bergantung pada master data `games` dan kolom `genre` untuk memfilter format turnamen yang valid.
-  - **Lokasi implementasi**: `migrations/000002_seed_games.up.sql` (File Baru), `migrations/000002_seed_games.down.sql` (File Baru).
-  - **Dependensi**: `DB-001`.
-  - **Acceptance Criteria**: Tabel `games` terisi minimal 2 game untuk setiap genre (`MOBA`, `FPS`, `SPORTS`, `BATTLE_ROYALE`) secara idempoten (`ON CONFLICT (slug) DO NOTHING`).
-- **`ARCH-002` — Penyusunan Spesifikasi Kontrak API (`contracts/openapi.yaml`)**
-  - **Apa yang diubah**: Mendokumentasikan kontrak OpenAPI 3.1 untuk seluruh endpoint `/api/v1/*`, skema DTO request/response, dan kode error standar.
-  - **Alasan**: Menjadi sumber kebenaran tunggal antara handler Go (`backend/internal/transport/http/`) dan tipe klien Next.js (`frontend/types/api.ts`).
-  - **Lokasi implementasi**: `contracts/openapi.yaml` (File Baru).
-  - **Dependensi**: `DB-001`.
-  - **Acceptance Criteria**: Seluruh endpoint auth, users, games, dashboard, tournaments, participants, stages, matches, dan public terdefinisi lengkap beserta skema respons dan status HTTP-nya.
-- **`BE-001` — Bootstrap Server Go, Konfigurasi, Database Pool & Transactional Helper**
-  - **Apa yang diubah**: Mengimplementasikan `cmd/api/main.go`, `internal/config/config.go`, `internal/database/postgres.go` (`pgxpool`), `internal/database/tx.go` (`WithTx`), middleware `RequestID`, `slog` structured logger, CORS, error handler terpusat, serta endpoint `/healthz` dan `/readyz`.
-  - **Alasan**: Menyediakan fondasi infrastruktur Go untuk seluruh domain service dan memastikan setiap mutasi kompleks dapat dibungkus dalam transaksi ACID.
-  - **Lokasi implementasi**: `backend/cmd/api/main.go`, `backend/internal/config/config.go`, `backend/internal/database/*.go`, `backend/internal/transport/http/**` (File Baru).
-  - **Dependensi**: `ARCH-001`, `DB-001`.
-  - **Acceptance Criteria**: `go build ./...` sukses; `GET /healthz` dan `GET /readyz` mengembalikan `200 OK` dengan format JSON standar.
-
-### Phase 2 — Go Backend Core: Authentication, Users, Games & Tournament CRUD
-**Tujuan**: Memindahkan seluruh manajemen identitas, sesi, profil, master game, turnamen, dan peserta ke backend Go dengan penegakan otorisasi kepemilikan yang ketat.
-- **Dependensi Fase**: Phase 1 selesai.
-- **Hasil yang Diharapkan**: Seluruh API Auth, Profil, Turnamen, dan Peserta berfungsi penuh di Go dan menutup celah `AUD-SEC-01`, `AUD-SEC-02`, `AUD-SEC-03`, dan `AUD-SEC-04`.
-
-#### Daftar Task Phase 2
-- **`BE-002` — Implementasi Layanan Autentikasi Argon2id & Session Cookie**
-  - **Apa yang diubah**: Membangun `user_repo.go`, `auth_service.go`, `auth_handler.go`, dan middleware `auth.go` untuk fitur Register, Login (mendukung email & username di sisi server), Logout, Forgot Password, Reset Password, dan Session validation menggunakan hash password murni **Argon2id**.
-  - **Alasan**: Menggantikan Supabase Auth (`app/login/page.tsx`, `app/register/page.tsx`, `app/auth/callback/route.ts`) dan menutup celah enumerasi email via username serta open redirect.
-  - **Lokasi implementasi**: `backend/internal/repository/user_repo.go`, `backend/internal/service/auth_service.go`, `backend/internal/transport/http/middleware/auth.go`, `backend/internal/transport/http/handler/auth_handler.go` (File Baru).
-  - **Dependensi**: `BE-001`, `ARCH-002`.
-  - **Acceptance Criteria**: Login dengan username maupun email berhasil dan menyetel cookie `gridify_session` (`HttpOnly`); login gagal mengembalikan `401` dengan pesan generik tanpa membocorkan email; endpoint terproteksi menolak request tanpa sesi valid dengan `401`.
-- **`BE-003` — Implementasi Layanan Profil & Keamanan Pengguna (`/api/v1/users/me`)**
-  - **Apa yang diubah**: Membangun endpoint `GET /api/v1/users/me`, `PATCH /api/v1/users/me` (update nama depan, nama belakang, nomor WhatsApp, dan username), serta `POST /api/v1/users/me/password` (ganti password dengan verifikasi password lama).
-  - **Alasan**: Menggantikan `features/auth/actions/profile-actions.ts` dan memperbaiki masalah profil yang sebelumnya tidak sinkron dengan tabel pengguna serta keharusan kirim email reset saat user sudah login.
-  - **Lokasi implementasi**: `backend/internal/transport/http/handler/user_handler.go`, `backend/internal/service/auth_service.go` (File Baru).
-  - **Dependensi**: `BE-002`.
-  - **Acceptance Criteria**: Perubahan nama, telepon, dan username tersimpan di tabel `users`; duplikasi username ditolak dengan `409 Conflict`; ganti password mencabut sesi lain milik user.
-- **`BE-004` — Implementasi Endpoint Master Games & Dashboard Summary**
-  - **Apa yang diubah**: Membangun `game_repo.go`, `GET /api/v1/games`, dan `GET /api/v1/dashboard/summary` yang menghitung `total_tournaments`, `active_tournaments`, **`upcoming_matches_count`** (jumlah match berstatus `SCHEDULED`/`ONGOING` pada turnamen milik user), serta 4 turnamen terbaru beserta objek `game`.
-  - **Alasan**: Menggantikan query di `app/dashboard/page.tsx` dan `app/dashboard/create/page.tsx`, serta memperbaiki bug angka `Jadwal Mendatang` yang sebelumnya di-hardcode `0` (`AUD-BUG-07`).
-  - **Lokasi implementasi**: `backend/internal/repository/game_repo.go`, `backend/internal/repository/tournament_repo.go`, `backend/internal/transport/http/handler/tournament_handler.go` (File Baru).
-  - **Dependensi**: `BE-002`, `DB-002`.
-  - **Acceptance Criteria**: `GET /api/v1/dashboard/summary` mengembalikan hitungan `upcoming_matches_count` yang akurat sesuai jumlah match belum selesai milik user.
-- **`BE-005` — Implementasi Layanan CRUD Turnamen Transaksional & Ownership Guard**
-  - **Apa yang diubah**: Membangun `tournament_service.go` dan handler untuk `GET /api/v1/tournaments` (dengan filter `q` & `status`), `POST /api/v1/tournaments` (membuat turnamen + stages awal dalam 1 transaksi `WithTx`), `GET /api/v1/tournaments/:id` (menyertakan detail `game`), `PATCH /api/v1/tournaments/:id`, dan `DELETE /api/v1/tournaments/:id` (memanfaatkan `ON DELETE CASCADE` setelah verifikasi `owner_id`).
-  - **Alasan**: Menggantikan `features/tournaments/actions/*.ts`, memperbaiki bug penghapusan turnamen tanpa cek `owner_id` terlebih dahulu (`AUD-SEC-02`), dan memastikan informasi nama game tersedia untuk header turnamen (`AUD-BUG-07`).
-  - **Lokasi implementasi**: `backend/internal/service/tournament_service.go`, `backend/internal/repository/tournament_repo.go`, `backend/internal/repository/stage_repo.go`, `backend/internal/transport/http/handler/tournament_handler.go` (File Baru).
-  - **Dependensi**: `BE-004`.
-  - **Acceptance Criteria**: Pembuatan turnamen dan stage bersifat atomik; pengguna yang bukan pemilik mendapat `403 Forbidden` pada `PATCH` dan `DELETE` tanpa ada satu pun baris `matches`/`stages`/`participants` yang terhapus.
-- **`BE-006` — Implementasi Layanan Manajemen Peserta & Aturan Penguncian Turnamen**
-  - **Apa yang diubah**: Membangun `participant_repo.go`, `participant_service.go`, dan handler untuk `GET`, `POST`, `PATCH`, dan `DELETE` peserta pada `/api/v1/tournaments/:id/participants`.
-  - **Alasan**: Menggantikan `features/participants/actions/participant-actions.ts`, menutup celah otorisasi (`AUD-SEC-01`), menyediakan kemampuan edit peserta, dan mencegah penambahan/penghapusan peserta secara sembarangan ketika status turnamen sudah `ONGOING` atau `COMPLETED`.
-  - **Lokasi implementasi**: `backend/internal/repository/participant_repo.go`, `backend/internal/service/participant_service.go`, `backend/internal/transport/http/handler/participant_handler.go` (File Baru).
-  - **Dependensi**: `BE-005`.
-  - **Acceptance Criteria**: Menambah atau menghapus peserta saat `tournament.status != 'DRAFT'` ditolak dengan `409 Conflict` (`TOURNAMENT_LOCKED`); mengedit nama/kontak peserta (`PATCH`) tetap diizinkan bagi pemilik turnamen dan langsung tercermin di seluruh match.
-
-### Phase 3 — Go Domain Engine: Bracket Generators, Progression & Standings Engine
-**Tujuan**: Memigrasikan dan memperbaiki seluruh algoritma bracket, progresi match, serta perhitungan klasemen ke dalam domain engine Go yang deterministik dan teruji.
-- **Dependensi Fase**: Phase 2 selesai.
-- **Hasil yang Diharapkan**: Seluruh bug algoritma (`AUD-BUG-01` s/d `AUD-BUG-07`) teratasi sepenuhnya dan setiap perubahan skor berjalan di dalam transaksi database.
-
-#### Daftar Task Phase 3
-- **`BE-007` — Implementasi Utilitas Matematika Bracket & Seeding Deterministik (`service/bracket/math.go`)**
-  - **Apa yang diubah**: Mem-porting dan menyempurnakan `NextPowerOfTwo`, `StandardSeedingOrder`, `DistributeMultiSlotParticipants` (anti-*team kill* untuk clan yang sama), `DistributeTeamsToGroups` (*snake draft*), dan `GenerateGroupPairs` di Go.
-  - **Alasan**: Menyediakan fondasi matematika murni tanpa side-effect yang digunakan bersama oleh generator Single Elimination, Double Elimination, Round Robin, dan Battle Royale.
-  - **Lokasi implementasi**: `backend/internal/service/bracket/math.go` (File Baru, menggantikan `features/bracket/utils/bracket-math.ts`).
-  - **Dependensi**: `BE-001`.
-  - **Acceptance Criteria**: Seluruh fungsi bersifat murni (*pure functions*) dan lulus pengujian untuk ukuran peserta 2 hingga 64 tim (ganjil maupun genap).
-- **`BE-008` — Implementasi Generator Single Elimination & Bronze Match (`service/bracket/single_elim.go`)**
-  - **Apa yang diubah**: Membangun generator Single Elimination di Go yang menyusun seluruh pohon match dengan `bracket_type` (`UPPER` / `THIRD_PLACE`), mengisi `next_match_id` + `next_match_slot` (`A`/`B`), mengisi `loser_next_match_id` + `loser_next_match_slot` pada Semifinal jika `has_third_place = true`, menangani auto-advance BYE di Round 1, dan menyimpan semuanya dalam satu transaksi database.
-  - **Alasan**: Menggantikan `features/bracket/generators/single-elimination.ts` yang sebelumnya melakukan N+1 HTTP update paralel tanpa transaksi.
-  - **Lokasi implementasi**: `backend/internal/service/bracket/single_elim.go` (File Baru).
-  - **Dependensi**: `BE-006`, `BE-007`.
-  - **Acceptance Criteria**: Seluruh pohon match Single Elimination (termasuk Bronze Match jika diaktifkan) terbentuk beserta tautan `next_match_id` dan `loser_next_match_id` yang lengkap dalam 1 transaksi; peserta BYE langsung berada di slot Round 2 yang tepat.
-- **`BE-009` — Implementasi Generator Double Elimination & Perbaikan BYE / Drop-Down (`service/bracket/double_elim.go`)**
-  - **Apa yang diubah**: Membangun generator Double Elimination di Go yang:
-    1. Menggunakan `StandardSeedingOrder` agar slot BYE tersebar merata di Round 1.
-    2. Menggunakan `bracket_type` eksplisit (`UPPER`, `LOWER`, `GRAND_FINAL`) dengan `round_number >= 1` positif.
-    3. Menyimpan `next_match_id`, `next_match_slot`, **`loser_next_match_id`**, dan **`loser_next_match_slot`** secara eksplisit pada setiap match Upper Bracket dan Lower Bracket saat pembuatan bracket.
-    4. Memetakan *loser* WB Round r secara presisi: WB Round 1 jatuh ke LB Round 1; WB Round r (r ≥ 2) jatuh ke LB Round 2(r - 1) pada nomor match yang bersesuaian (1-ke-1), bukan melompat ke ronde ganjil atau menumpuk di Match #1.
-    5. Menangani BYE di Round 1 secara tuntas: memajukan pemenang WB Round 1 ke WB Round 2, dan secara otomatis menandai slot *loser* BYE di LB Round 1 serta memajukan lawan di LB Round 1 ke LB Round 2 jika match LB Round 1 tersebut hanya memiliki 1 peserta nyata.
-  - **Alasan**: Memperbaiki bug kritis `AUD-BUG-01` pada `features/bracket/generators/double-elimination.ts` dan `progression-service.ts`.
-  - **Lokasi implementasi**: `backend/internal/service/bracket/double_elim.go` (File Baru).
-  - **Dependensi**: `BE-008`.
-  - **Acceptance Criteria**: Simulasi penuh turnamen Double Elimination dengan 4, 5, 6, 7, 8, 12, dan 16 peserta menyelesaikan seluruh match dari Round 1 hingga Grand Final tanpa satu pun match Lower Bracket yang macet atau salah slot.
-- **`BE-010` — Implementasi Generator Round Robin (1-Leg & 2-Leg Home/Away) & Battle Royale (`round_robin.go`, `battle_royale.go`)**
-  - **Apa yang diubah**:
-    1. Membangun generator Round Robin menggunakan *Circle Method* yang menghormati `tournament.home_away` (jika `true`, menghasilkan putaran kedua dengan posisi Home/Away dibalik) serta membagi peserta ke dalam grup berisi 4 tim jika formatnya `HYBRID_UCL`.
-    2. Membangun generator Battle Royale yang menghormati `br_total_matches` dan `br_max_teams_per_match` dari konfigurasi turnamen serta menyimpan grup aktif pada kolom `playing_groups`.
-  - **Alasan**: Menggantikan `features/bracket/generators/round-robin.ts` dan `battle-royale.ts` serta menerapkan konfigurasi `homeAway` dan jumlah match yang sebelumnya diabaikan (`AUD-BUG-06`).
-  - **Lokasi implementasi**: `backend/internal/service/bracket/round_robin.go`, `backend/internal/service/bracket/battle_royale.go` (File Baru).
-  - **Dependensi**: `BE-007`.
-  - **Acceptance Criteria**: Turnamen Round Robin dengan `home_away = true` menghasilkan jadwal 2 leg; turnamen Battle Royale menghasilkan jadwal sesuai `br_total_matches` dan rotasi grup yang seimbang.
-- **`BE-011` — Implementasi Standings, Leaderboard & Unified Champions Calculator (`standings_service.go`)**
-  - **Apa yang diubah**: Membangun layanan tunggal di Go untuk:
-    1. Menghitung klasemen Round Robin / Group Stage berdasarkan match yang `COMPLETED` menggunakan `points_per_win` dan `points_per_draw` dari turnamen, dengan tie-breaker berurutan: `Points` → `Goal Difference (GD)` → `Goals For (GF)` → `Head-to-Head` → `Seed Number`.
-    2. Menghitung Leaderboard Battle Royale dari tabel relasional `battle_royale_match_results` menggunakan `br_point_system` turnamen, dengan tie-breaker: `Total Points` → `WWCD (Wins)` → `Placement Points` → `Total Kills`.
-    3. Menentukan podium juara (`first`, `second`, `third`) secara seragam untuk seluruh 5 format turnamen.
-  - **Alasan**: Menghapus duplikasi logika klasemen di 5 file berbeda dan memperbaiki bug `ChampionsView` yang sebelumnya tidak pernah tampil pada Liga dan Battle Royale (`AUD-BUG-07`).
-  - **Lokasi implementasi**: `backend/internal/service/standings_service.go` (File Baru).
-  - **Dependensi**: `BE-009`, `BE-010`.
-  - **Acceptance Criteria**: Endpoint `GET /api/v1/tournaments/:id/stages/:stageId/view` mengembalikan struktur bracket/jadwal, klasemen terhitung, dan objek `champions` yang konsisten untuk semua format.
-- **`BE-012` — Implementasi Mesin Progresi Match, Validasi Best-Of, Koreksi Skor & Transisi Knockout (`progression.go`)**
-  - **Apa yang diubah**:
-    1. Mengimplementasikan `UpdateMatchScore` yang memvalidasi skor berdasarkan `best_of` (dan menolak skor seri pada match eliminasi jika ditandai selesai), memajukan pemenang ke `next_match_id` (`next_match_slot`), menjatuhkan kalah ke `loser_next_match_id` (`loser_next_match_slot`), serta mengecek penyelesaian stage/turnamen secara atomik.
-    2. Menangani koreksi skor pada match yang sudah `COMPLETED`: memperbarui slot peserta di match hilir jika match hilir masih `SCHEDULED`, atau menolak dengan `409 DOWNSTREAM_MATCH_ALREADY_PLAYED` jika match hilir sudah berjalan/selesai.
-    3. Mengimplementasikan `AdvanceGroupToKnockout` untuk `HYBRID_UCL` yang memanggil generator penuh (`GenerateSingleElimination` atau `GenerateDoubleElimination`) setelah melakukan *cross-seeding* juara dan runner-up grup.
-  - **Alasan**: Memperbaiki bug kritis `AUD-BUG-02` (Knockout Single Elimination pada Hybrid UCL tidak memiliki Semifinal/Final) dan `AUD-BUG-05` (koreksi skor merusak bracket).
-  - **Lokasi implementasi**: `backend/internal/service/bracket/progression.go`, `backend/internal/transport/http/handler/bracket_handler.go`, `backend/internal/transport/http/handler/match_handler.go` (File Baru).
-  - **Dependensi**: `BE-008`, `BE-009`, `BE-010`, `BE-011`.
-  - **Acceptance Criteria**: `POST /api/v1/tournaments/:id/stages/:stageId/advance` menghasilkan seluruh babak Knockout hingga Final; koreksi skor memperbarui match hilir secara akurat atau menolak dengan `409` jika match hilir sudah dimainkan.
-
-### Phase 4 — Realtime SSE Infrastructure & Database Seeder Tooling
-**Tujuan**: Menyediakan kanal pembaruan langsung (*realtime*) mandiri tanpa Supabase Realtime dan menyediakan CLI seeder untuk pengujian pada database PostgreSQL baru.
-- **Dependensi Fase**: Phase 3 selesai.
-- **Hasil yang Diharapkan**: Penonton menerima pembaruan skor instan melalui SSE, dan database PostgreSQL baru dapat diisi data sampel lengkap kapan saja melalui perintah `make seed`.
-
-#### Daftar Task Phase 4
-- **`BE-013` — Implementasi Server-Sent Events (SSE) Broker Hub & Public Tournament Endpoints**
-  - **Apa yang diubah**: Membangun `internal/realtime/hub.go` yang mengelola langganan klien per `tournament_id`, mengirimkan *heartbeat* komentar SSE (`: ping\n\n`) setiap 25 detik, dan memancarkan event JSON (`match_updated`, `participant_updated`, `stage_updated`, `tournament_updated`) setiap kali transaksi mutasi di `tournament_service`, `participant_service`, atau `progression` berhasil di-*commit*.
-  - **Alasan**: Menggantikan ketergantungan pada Supabase Realtime (`hooks/use-tournament-realtime.ts`) dengan mekanisme streaming standar HTTP yang ringan dan bekerja di balik reverse proxy.
-  - **Lokasi implementasi**: `backend/internal/realtime/hub.go`, `backend/internal/transport/http/handler/public_handler.go` (File Baru).
-  - **Dependensi**: `BE-012`.
-  - **Acceptance Criteria**: Koneksi `GET /api/v1/public/tournaments/:id/stream` tetap terbuka, menerima event dalam < 100 ms setelah skor diubah, dan membersihkan *channel* secara otomatis saat konteks request klien terputus.
-- **`DB-003` — Pembuatan Database Seeder & Verifikasi Constraint PostgreSQL (`backend/cmd/seed/main.go`)**
-  - **Apa yang diubah**: Membuat CLI tool Go (`cmd/seed/main.go`) yang mengisi database PostgreSQL baru secara idempoten dengan akun organizer contoh serta sampel turnamen untuk kelima format (`SINGLE_ELIMINATION`, `DOUBLE_ELIMINATION`, `ROUND_ROBIN`, `HYBRID_UCL`, `BATTLE_ROYALE`) lengkap dengan peserta dan jadwal pertandingan.
-  - **Alasan**: Memudahkan pengembangan lokal, pengujian UI/UX, dan pengujian integrasi pada database PostgreSQL baru tanpa perlu membuat data manual berulang kali.
-  - **Lokasi implementasi**: `backend/cmd/seed/main.go` (File Baru).
-  - **Dependensi**: `DB-002`, `BE-012`.
-  - **Acceptance Criteria**: Perintah `make seed` berjalan sukses dalam 1 transaksi dan menghasilkan data contoh yang valid untuk seluruh 5 format turnamen.
-
-### Phase 5 — UI/UX Design System Overhaul & Next.js Frontend Refactoring
-**Tujuan**: Menghapus seluruh kesan "AI Slop", merombak sistem desain dan komponen UI di Next.js, menghapus `@supabase/*` dan `@tanstack/react-query`, serta mengaktifkan kembali pemeriksaan TypeScript ketat (`ignoreBuildErrors: false`).
-- **Dependensi Fase**: Phase 2, Phase 3, dan Phase 4 selesai.
-- **Hasil yang Diharapkan**: Antarmuka bersih, profesional, responsif, berbahasa Indonesia konsisten, menggunakan SVG bracket konektor yang presisi, dan terhubung penuh ke Go Backend API.
-
-#### Daftar Task Phase 5
-- **`FE-001` — Pembersihan Dependency, Konfigurasi TypeScript Strict & Typed API Client**
-  - **Apa yang diubah**:
-    1. Menghapus `@supabase/ssr`, `@supabase/supabase-js`, `@tanstack/react-query`, `@tanstack/react-query-devtools`, dan `autoprefixer` dari `package.json`.
-    2. Mengunci versi `lucide-react`, `typescript`, `@types/node` ke versi semver eksak, serta memperbarui `@types/react` dan `@types/react-dom` ke `^19.0.0`.
-    3. Mengubah `next.config.ts` agar `typescript: { ignoreBuildErrors: false }` (atau menghapus blok penonaktifan tersebut).
-    4. Membuat `lib/api-client.ts` dan `types/api.ts` untuk komunikasi ke Go API, serta memperbarui `proxy.ts` agar memeriksa sesi via cookie `gridify_session`.
-    5. Menghapus direktori `lib/supabase/`, `types/database.ts` lama, dan menyederhanakan `components/providers/app-providers.tsx` (menyisakan konfigurasi `Toaster` Sonner yang bersih).
-  - **Alasan**: Menghapus *dead dependencies*, memperbaiki ketidakcocokan tipe React 19 (`AUD-ARCH-01`), dan memastikan setiap kesalahan tipe terdeteksi saat build (`AUD-BUG-04`).
-  - **Lokasi implementasi**: `package.json`, `next.config.ts`, `proxy.ts`, `components/providers/app-providers.tsx`, `lib/api-client.ts` (File Baru), `types/api.ts` (File Baru).
-  - **Dependensi**: `ARCH-002`, `BE-002`.
-  - **Acceptance Criteria**: Tidak ada lagi import `@supabase/*` atau `@tanstack/react-query` di seluruh codebase; `lib/api-client.ts` meneruskan cookie sesi dengan benar pada SSR maupun CSR.
-- **`UX-001` — Implementasi Design Tokens Baru, Tipografi Geist/Inter & Komponen UI Inti (`components/ui/*`)**
-  - **Apa yang diubah**:
-    1. Merombak `app/globals.css` dan `app/layout.tsx`: menghapus `font-family: Arial, Helvetica, sans-serif;`, mengonfigurasi variabel `--font-sans` dan `--font-mono` (`tabular-nums`), serta menetapkan token warna permukaan Obsidian/Zinc (`#09090B`, `#121215`, `#18181B`, `#27272A`).
-    2. Membangun komponen dasar yang dapat digunakan kembali di `components/ui/`: `Button`, `Input`, `Select`, `Textarea`, `Badge`, `Card`, `Modal`, `ConfirmDialog` (pengganti `window.confirm`), dan `EmptyState`.
-  - **Alasan**: Menghilangkan fragmentasi warna (`#1a1b26` vs `slate-950`), memperbaiki bug font (`AUD-UX-01`), dan menggantikan `window.confirm()` dengan dialog aksesibel.
-  - **Lokasi implementasi**: `app/globals.css`, `app/layout.tsx`, `components/ui/*.tsx` (File Baru).
-  - **Dependensi**: `FE-001`.
-  - **Acceptance Criteria**: Seluruh halaman merender font sans dan mono yang benar; tidak ada lagi pemanggilan `window.confirm()` di seluruh aplikasi; kontras teks memenuhi standar WCAG AA (≥ 4.5:1).
-- **`UX-002` — Redesign Landing Page & Halaman Autentikasi (Bebas "AI Slop")**
-  - **Apa yang diubah**:
-    1. Merombak `app/page.tsx` dan `components/landing/{navbar,hero,features,how-it-works,footer}.tsx`: menghapus seluruh dekorasi `blur-[128px]` dan tombol gradasi neon, menambahkan komponen pratinjau bracket interaktif di Hero, dan menghapus link mati `#`.
-    2. Merombak `app/login/page.tsx`, `app/register/page.tsx`, `app/forgot-password/page.tsx`, dan `app/update-password/page.tsx` agar menggunakan layout autentikasi yang seragam, tenang, dan terhubung ke endpoint `/api/v1/auth/*`.
-  - **Alasan**: Menghilangkan kesan template AI generatif pada halaman publik dan pintu masuk pengguna.
-  - **Lokasi implementasi**: `app/page.tsx`, `components/landing/*.tsx`, `app/login/page.tsx`, `app/register/page.tsx`, `app/forgot-password/page.tsx`, `app/update-password/page.tsx`.
-  - **Dependensi**: `UX-001`, `BE-002`.
-  - **Acceptance Criteria**: Tidak ada elemen dekoratif `blur-3xl` / `blur-[100px]` atau gradasi pink/ungu pada halaman landing maupun auth; alur registrasi, login (email/username), dan lupa password berfungsi penuh melalui Go API.
-- **`FE-002` — Redesign Dashboard Shell, Overview, My Tournaments, Create Tournament & Profile**
-  - **Apa yang diubah**:
-    1. Merombak `app/dashboard/layout.tsx`: menghapus bola blur 500px, menyatukan bahasa navigasi ke Bahasa Indonesia (`Ringkasan`, `Turnamen Saya`, `Profil`, `Buat Turnamen`, `Keluar`), dan menampilkan info pengguna aktif di sidebar.
-    2. Merombak `app/dashboard/page.tsx` dan `app/dashboard/tournaments/page.tsx`: menampilkan metrik `Jadwal Mendatang` riil dari `GET /api/v1/dashboard/summary`, memperbaiki kartu turnamen agar tidak menggunakan tumpukan link `pointer-events-none`, dan menambahkan filter pencarian yang responsif.
-    3. Memperbarui `app/dashboard/create/page.tsx` & `create-tournament-form.tsx` (menambahkan konfigurasi jumlah match Battle Royale dan keterangan jelas untuk `Best Of` & `Home/Away`).
-    4. Merombak `app/dashboard/profile/page.tsx`, `basic-info-form.tsx`, dan `security-form.tsx`: menghapus warna `#1a1b26`/`#0f1016`, menambahkan input `username`, dan mengubah form keamanan menjadi ganti password langsung.
-  - **Alasan**: Memperbaiki bug metrik statis `0`, inkonsistensi warna halaman profil, dan masalah UX pencarian serta kartu turnamen.
-  - **Lokasi implementasi**: `app/dashboard/layout.tsx`, `app/dashboard/page.tsx`, `app/dashboard/tournaments/page.tsx`, `app/dashboard/create/page.tsx`, `app/dashboard/profile/page.tsx`, `features/auth/components/*.tsx`, `features/tournaments/components/*.tsx`.
-  - **Dependensi**: `UX-001`, `BE-003`, `BE-004`, `BE-005`.
-  - **Acceptance Criteria**: Seluruh halaman dashboard menggunakan palet permukaan standar, menampilkan data riil dari Go API, dan form profil dapat mengubah data diri, username, serta password secara langsung.
-- **`FE-003` — Redesign Workspace Turnamen (`[id]/layout.tsx`, Overview, Participants & Settings)**
-  - **Apa yang diubah**:
-    1. Merombak `app/dashboard/tournaments/[id]/layout.tsx`: menampilkan nama game (`tournament.game.name`), status badge, dan komponen Client `TournamentTabNav` dengan indikator tab aktif yang jelas.
-    2. Menghapus/mengalihkan halaman yatim `app/dashboard/tournaments/[id]/standings/page.tsx` ke `/dashboard/tournaments/[id]/bracket`.
-    3. Merombak `app/dashboard/tournaments/[id]/participants/page.tsx` dan `features/participants/components/*`: menambahkan modal **Edit Peserta**, menggunakan `ConfirmDialog` saat menghapus peserta, dan mengunci form tambah/hapus saat turnamen berstatus `ONGOING`/`COMPLETED`.
-    4. Merombak `app/dashboard/tournaments/[id]/settings/page.tsx` agar menggunakan `ConfirmDialog` pada Danger Zone.
-  - **Alasan**: Memperbaiki bug tampilan UUID `game_id` mentah, ketiadaan indikator tab aktif, halaman standings yang rusak (`AUD-BUG-03`, `AUD-BUG-07`), dan ketiadaan fitur edit peserta di UI.
-  - **Lokasi implementasi**: `app/dashboard/tournaments/[id]/layout.tsx`, `app/dashboard/tournaments/[id]/page.tsx`, `app/dashboard/tournaments/[id]/participants/page.tsx`, `app/dashboard/tournaments/[id]/settings/page.tsx`, `app/dashboard/tournaments/[id]/standings/page.tsx`, `features/participants/components/*.tsx`.
-  - **Dependensi**: `FE-002`, `BE-006`.
-  - **Acceptance Criteria**: Header turnamen menampilkan nama game (bukan UUID); tab aktif ter-highlight; peserta dapat ditambahkan, diedit, dan dihapus saat `DRAFT`, serta terkunci otomatis saat `ONGOING`/`COMPLETED`.
-- **`UX-003` — Redesign Kanvas Bracket SVG, Standings Table, Battle Royale View & Public Page (`/t/[id]`)**
-  - **Apa yang diubah**:
-    1. Merombak `features/bracket/components/bracket-visualizer.tsx` dan `match-card.tsx`: mengganti `BracketConnector` berbasis `div` statis dengan sistem tata letak grid/kolom terukur dan konektor SVG dinamis yang menghubungkan titik tengah kartu match secara presisi pada ukuran bracket berapa pun.
-    2. Merombak `features/bracket/components/champions-view.tsx` menjadi komponen `ChampionsPodium` yang bersih dan menampilkannya pada **semua format turnamen** (termasuk `ROUND_ROBIN` dan `BATTLE_ROYALE`) berdasarkan data `champions` dari backend.
-    3. Merombak `standings-table.tsx`, `league-match-card.tsx`, `br-view.tsx`, `br-leaderboard.tsx`, `br-score-modal.tsx`, dan `score-modal.tsx` agar merender data klasemen dan poin hasil kalkulasi backend Go (menghapus kalkulasi duplikat di frontend) dan memperbaiki prop `ScoreModal` pada `LeagueMatchCard`.
-    4. Mengganti `hooks/use-tournament-realtime.ts` dengan `hooks/use-tournament-sse.ts` (`EventSource` ke `/api/v1/public/tournaments/:id/stream`) dan merombak halaman publik `app/(public)/t/[id]/page.tsx`.
-  - **Alasan**: Memperbaiki bug konektor bracket putus, bug kompilasi `LeagueMatchCard` (`AUD-BUG-04`), duplikasi logika klasemen di frontend, dan memigrasikan fitur *live updates* ke SSE Go.
-  - **Lokasi implementasi**: `features/bracket/components/*.tsx`, `hooks/use-tournament-sse.ts` (File Baru), `components/providers/tournament/realtime-listener.tsx`, `app/dashboard/tournaments/[id]/bracket/page.tsx`, `app/(public)/t/[id]/page.tsx`.
-  - **Dependensi**: `FE-003`, `BE-011`, `BE-012`, `BE-013`.
-  - **Acceptance Criteria**: Garis konektor bracket tersambung rapi di semua ronde (4 s/d 32 peserta); `LeagueMatchCard` dapat membuka `ScoreModal` tanpa error; podium juara tampil di semua format saat turnamen selesai; halaman publik `/t/[id]` otomatis ter-update via SSE saat skor diubah.
-
-### Phase 6 — End-to-End Integration, Testing & Production Readiness
-**Tujuan**: Memastikan seluruh komponen lulus pengujian unit, integrasi, kontrak API, kompilasi TypeScript ketat, dan siap dideploy.
-- **Dependensi Fase**: Phase 1 s/d Phase 5 selesai.
-- **Hasil yang Diharapkan**: Seluruh suite pengujian hijau, `next build` lulus dengan `ignoreBuildErrors: false`, dan tidak ada lagi artefak kode Supabase yang tersisa di repositori.
-
-#### Daftar Task Phase 6
-- **`TEST-001` — Unit Tests Algoritma Bracket, Progresi & Standings di Go**
-  - **Apa yang diubah**: Menulis suite unit test tabel-terdorong (*table-driven tests*) di `backend/internal/service/bracket/bracket_test.go` dan `standings_service_test.go` yang menguji:
-    - Single Elimination (4, 5, 8, 16 peserta + Bronze Match + BYE auto-advance).
-    - Double Elimination (4, 5, 6, 7, 8, 12, 16 peserta + BYE di Round 1 + verifikasi setiap drop-down WB ke LB hingga Grand Final).
-    - Round Robin (ganjil/genap, 1-leg vs 2-leg `home_away`, kalkulasi tie-breaker).
-    - Hybrid UCL (distribusi grup, klasemen, cross-seeding, dan generasi Knockout Single maupun Double Elimination).
-    - Battle Royale (single lobby ≤ 18 tim vs multi-group > 18 tim, kalkulasi WWCD & tie-breaker).
-  - **Alasan**: Menjamin secara matematis bahwa bug `AUD-BUG-01`, `AUD-BUG-02`, `AUD-BUG-05`, dan `AUD-BUG-06` tidak akan pernah terulang.
-  - **Lokasi implementasi**: `backend/internal/service/bracket/bracket_test.go`, `backend/internal/service/standings_service_test.go` (File Baru).
-  - **Dependensi**: `BE-012`.
-  - **Acceptance Criteria**: `go test -v -race ./internal/service/...` lulus 100% tanpa *race condition*.
-- **`TEST-002` — Integration & Security Authorization Tests pada API Go + PostgreSQL**
-  - **Apa yang diubah**: Menulis pengujian integrasi HTTP + PostgreSQL untuk memverifikasi:
-    - Penolakan `401 Unauthorized` dan `403 Forbidden` ketika pengguna B mencoba mengedit/menghapus turnamen, peserta, bracket, atau skor milik pengguna A.
-    - Penolakan `409 Conflict` saat menambah/menghapus peserta ketika turnamen berstatus `ONGOING`.
-    - Verifikasi `CHECK` constraint dan keamanan rollback transaksi saat terjadi kegagalan di tengah operasi.
-  - **Alasan**: Memverifikasi secara otomatis bahwa celah `AUD-SEC-01` s/d `AUD-SEC-04` telah tertutup rapat.
-  - **Lokasi implementasi**: `backend/internal/transport/http/handler/integration_test.go` (File Baru).
-  - **Dependensi**: `BE-013`, `TEST-001`.
-  - **Acceptance Criteria**: Seluruh skenario otorisasi negatif (`401`, `403`, `409`) dan positif (`200`, `201`) lulus pengujian integrasi terhadap instance PostgreSQL uji.
-- **`TEST-003` — Validasi Build Frontend Strict, Linting & End-to-End Smoke Verification**
-  - **Apa yang diubah**: Menjalankan `tsc --noEmit`, `next lint`, dan `next build` pada `frontend/` dengan `ignoreBuildErrors: false`, serta menguji alur penuh dari registrasi → buat turnamen → tambah peserta → generate bracket → input skor hingga juara muncul di halaman publik `/t/[id]`.
-  - **Alasan**: Memastikan integrasi penuh antara Next.js dan Go API bebas dari regresi maupun error kompilasi tersembunyi.
-  - **Lokasi implementasi**: `frontend/`, `Makefile`.
-  - **Dependensi**: `UX-003`, `TEST-002`.
-  - **Acceptance Criteria**: `npm run build` dan `npx tsc --noEmit` lulus dengan 0 error; 0 referensi ke `@supabase/*` di seluruh repositori.
-
-## 10. Testing & Validation Strategy
-
-1. **Unit Testing (Go Domain Layer)**:
-   - Fokus utama pada `internal/service/bracket` dan `internal/service/standings_service.go`.
-   - Setiap skenario ukuran peserta (termasuk angka ganjil dan non-pangkat-dua seperti 5, 6, 7, 9, 10, 12, 13, 15) diuji secara deterministik untuk memastikan jumlah match yang dibuat, pasangan `next_match_id` / `loser_next_match_id`, dan penyelesaian BYE bekerja 100% akurat.
-2. **Integration Testing (Database & HTTP Handlers)**:
-   - Menggunakan database PostgreSQL 17 pengujian yang menjalankan migrasi murni dari folder `migrations/`.
-   - Menguji batasan transaksi (`WithTx`), *foreign key cascade* saat menghapus turnamen, constraint `chk_matches_distinct_participants` & `chk_matches_valid_winner`, serta penguncian baris (`SELECT ... FOR UPDATE`) saat dua request mencoba memperbarui skor match yang sama secara bersamaan.
-3. **API Contract Validation**:
-   - Memastikan seluruh struktur JSON yang dikembalikan oleh handler Go sesuai dengan definisi di `contracts/openapi.yaml` dan tipe `frontend/types/api.ts`.
-4. **Frontend Type-Checking & Build Gate**:
-   - Menjalankan `tsc --noEmit` dan `next build` tanpa `ignoreBuildErrors`. Build wajib gagal jika ada satu pun prop komponen yang tidak lengkap (seperti kasus `LeagueMatchCard` → `ScoreModal` sebelumnya).
-5. **Security & Regression Checklist**:
-   - Verifikasi matriks akses: Anonim vs Pengguna Terautentikasi Bukan Pemilik vs Pemilik Turnamen pada seluruh endpoint API.
-   - Verifikasi header keamanan cookie (`HttpOnly`, `SameSite=Lax`, `Secure` di production) dan proteksi CORS.
-
-## 11. Risk Register
-
-| ID Risiko | Deskripsi Risiko Teknis / Operasional | Dampak | Probabilitas | Strategi Mitigasi Konkret |
+| ID Risiko | Deskripsi Risiko | Dampak | Probabilitas | Strategi Mitigasi |
 | :--- | :--- | :--- | :--- | :--- |
-| **RISK-01** | **Race Condition saat Update Skor & Progresi Bracket Simultan**: Dua tab/request mengupdate match yang bersebelahan secara bersamaan dan menulis ke `next_match_id` yang sama. | Tinggi | Sedang | Gunakan transaksi `pgx.BeginTx` dengan `SELECT ... FOR UPDATE` pada baris match yang sedang diedit beserta baris `next_match_id` dan `loser_next_match_id` sebelum memodifikasi slot `participant_a_id` / `participant_b_id`. |
-| **RISK-02** | **Korupsi Progresi Bracket saat Admin Mengoreksi Skor Match yang Sudah Selesai**: Mengubah pemenang di ronde awal dapat merusak ronde berikutnya yang sudah berjalan. | Tinggi | Tinggi | Terapkan aturan ketat di `progression.go`: izinkan perubahan pemenang otomatis hanya jika `next_match` dan `loser_next_match` masih berstatus `SCHEDULED`. Jika match hilir sudah `ONGOING`/`COMPLETED`, tolak dengan `409 Conflict` dan instruksikan admin untuk me-reset hasil match hilir terlebih dahulu. |
-| **RISK-03** | **Koneksi SSE Terputus oleh Reverse Proxy / Load Balancer**: Beberapa proxy memutus koneksi HTTP idle setelah 60 detik. | Sedang | Tinggi | Kirimkan komentar *heartbeat* (`: ping\n\n`) dari Go SSE Hub setiap 25 detik, set header `X-Accel-Buffering: no` dan `Cache-Control: no-cache`, serta aktifkan *auto-reconnect* dengan *exponential backoff* pada hook `useTournamentSSE`. |
-| **RISK-04** | **Ketidaksinkronan Cookie Sesi antara Next.js Server Components dan Go Backend**: SSR gagal membaca sesi karena cookie tidak diteruskan pada *server-to-server fetch*. | Tinggi | Sedang | Di `frontend/lib/api-client.ts`, deteksi eksekusi di sisi server (`typeof window === 'undefined'`), baca cookie dari `next/headers` (`await cookies()`), dan teruskan secara eksplisit pada header `Cookie` ke Go API. |
-| **RISK-05** | **Kehilangan Bracket Saat Regenerasi / Reset Gagal di Tengah Jalan**: Pada kode lama, `DELETE FROM matches` dijalankan di luar transaksi sebelum generator selesai. | Tinggi | Sedang | Bungkus penghapusan match lama (`DELETE FROM matches WHERE stage_id = $1`), pembuatan match baru, dan penyambungan `next_match_id` / `loser_next_match_id` di dalam satu transaksi `WithTx`. Jika terjadi error, seluruh transaksi di-*rollback* otomatis. |
+| **RISK-UI-01** | **Perbedaan posisi koordinat SVG saat font web selesai dimuat (*Font Loading Layout Shift*)** yang dapat membuat titik ujung konektor bracket bergeser 2–4px. | Sedang | Sedang | Gunakan `ResizeObserver` pada kontainer kanvas bracket dan jalankan ulang `calculatePaths` setelah `document.fonts.ready` selesai. |
+| **RISK-UI-02** | **Kepadatan visual kanvas bracket pada Double Elimination dengan 16+ peserta di layar kecil**. | Sedang | Tinggi | Pertahankan lebar kartu match yang kompak (`w-60` / `240px`), gunakan `overflow-x-auto` dengan scrollbar kustom yang halus, dan pisahkan seksi Upper Bracket & Lower Bracket dengan header berlabel jelas. |
+| **RISK-UI-03** | **Kegagalan pemuatan aset logo jika ke depan ditambahkan game baru di tabel `games` tanpa file SVG lokal**. | Rendah | Sedang | Komponen `GameLogoBadge` dilengkapi state `hasError` (`onError`) yang secara otomatis merender emblem vektor berbasis genre (`MOBA`, `FPS`, `SPORTS`, `BATTLE_ROYALE`) + inisial game. |
+| **RISK-API-01** | **Ketidakcocokan format payload antara form frontend dan `DisallowUnknownFields()` di handler Go**. | Tinggi | Rendah | Selaraskan payload di `create-tournament-form.tsx` agar mengirim field tingkat atas yang sesuai dengan `CreateTournamentPayload`, sekaligus tambahkan dukungan field opsional `match_rules` di struct Go. |
 
-## 12. Definition of Done (DoD)
+## 14. Definition of Done (DoD)
 
-### 12.1 Kriteria Selesai per Fase (Phase Gates)
-1. **Phase 1 Gate**: PostgreSQL 17 berjalan via Docker dengan skema baru yang murni, seluruh migrasi `up` dan `down` (`000001_init_schema` & `000002_seed_games`) sukses tanpa error, `contracts/openapi.yaml` lengkap, dan server Go merespons `/healthz` & `/readyz` dengan status `200 OK`.
-2. **Phase 2 Gate**: Seluruh endpoint Auth (Argon2id), User Profile, Master Games, Dashboard Summary, Tournament CRUD, dan Participant CRUD berfungsi di Go dengan penegakan kepemilikan (`owner_id`) 100% dan lulus uji otorisasi negatif (`401`/`403`/`409`).
-3. **Phase 3 Gate**: Seluruh generator bracket (`SINGLE_ELIMINATION`, `DOUBLE_ELIMINATION`, `ROUND_ROBIN`, `HYBRID_UCL`, `BATTLE_ROYALE`), mesin progresi match, dan kalkulator klasemen/podium di Go lulus unit test deterministik untuk ukuran peserta genap, ganjil, dan BYE.
-4. **Phase 4 Gate**: Endpoint streaming SSE memancarkan pembaruan turnamen secara *realtime*, dan CLI `make seed` berhasil membuat data contoh untuk kelima format turnamen di PostgreSQL baru.
-5. **Phase 5 Gate**: Seluruh halaman Next.js menggunakan sistem desain baru (tanpa blur blobs, tanpa gradasi neon berlebihan, tanpa warna `#1a1b26` liar, tanpa `window.confirm`, dan menggunakan konektor bracket SVG yang presisi), serta tidak ada lagi dependency `@supabase/*` atau `@tanstack/react-query`.
-6. **Phase 6 Gate**: Seluruh unit test, integration test, `tsc --noEmit`, dan `next build` lulus 100% tanpa `ignoreBuildErrors`.
+Seluruh pekerjaan pada rencana implementasi ini dinyatakan **SELESAI (DONE)** hanya apabila seluruh kriteria berikut terpenuhi:
+1. **Zero Console Errors**: Tidak ada lagi error React `Each child in a list should have a unique "key" prop` pada `StandingsTable`, `BRLeaderboard`, maupun komponen list lainnya.
+2. **Clear Selection Feedback & Working Form Submission**: Pilihan Game, Format Kompetisi, Best-Of, Putaran Battle Royale, dan Status Turnamen memiliki feedback visual aktif yang jelas, mendukung navigasi keyboard, dan form pembuatan turnamen berhasil disimpan ke backend Go tanpa error `400`.
+3. **Accurate Score & Game Name Rendering**: Seluruh kartu pertandingan (`MatchCard`, `LeagueMatchCard`), modal input skor (`ScoreModal`, `BRScoreModal`), dan header/kartu turnamen menampilkan skor (`score_a`, `score_b`) dan nama game (`tournament.game.name`) yang akurat.
+4. **Cohesive Visual Identity & Typography**: Sistem warna **"Tactical Broadcast Slate & Crimson Volt"** (`@theme` di `globals.css`) dan sistem tipografi 3-tier (`Space Grotesk`, `Plus Jakarta Sans`, `JetBrains Mono`) aktif secara konsisten di seluruh halaman.
+5. **Zero AI-Slop**: Badge tech stack di Hero section, pill dekoratif berulang, link `GitHub` di Footer, link palsu `"Bagan Publik"` di Navbar, dan floating pill `SSE REALTIME` di sudut kanan bawah telah dihapus/dirombak sesuai spesifikasi.
+6. **Accurate Bracket Connectors**: Bagan Single Elimination (termasuk Bronze Match) dan Double Elimination (Upper, Lower, Grand Final) dikelompokkan berdasarkan `bracket_type` dengan benar, dan garis konektor SVG ortogonal menghubungkan setiap pertandingan ke baris slot peserta (`A` atau `B`) yang tepat.
+7. **Supported Game Logos in Hero & App**: Ke-10 game resmi di database memiliki aset logo SVG di `frontend/public/games/` dengan fallback yang aman, ditampilkan secara art-directed di Hero section serta diintegrasikan pada alur pemilihan game dan kartu turnamen.
+8. **Green Build & Tests**: `go test ./...` di `backend/` dan `npx tsc --noEmit && npm run build` di `frontend/` lulus 100% tanpa error.
 
-### 12.2 Kriteria Final Penyelesaian Revamp
-- [x] Arsitektur **Next.js + Go + PostgreSQL 17 (Greenfield)** berjalan penuh secara end-to-end.
-- [x] Seluruh 14 temuan audit (`AUD-SEC-01` s/d `AUD-UX-01`) telah diselesaikan dan terverifikasi.
-- [x] Tidak ada satu pun logika bisnis utama (generator bracket, progresi pemenang/kalah, perhitungan poin liga/Battle Royale) yang dieksekusi di kode frontend.
-- [x] `next.config.ts` tidak lagi menggunakan `ignoreBuildErrors: true` dan `npm run build` berhasil tanpa peringatan/error tipe.
-- [x] Tampilan aplikasi bersih, modern, konsisten dalam Bahasa Indonesia, dan bebas dari artefak visual *AI slop*.
+## 15. Execution Checklist
 
-## 13. Execution Checklist
+- [x] **`DS-001`** (`P0`) — Implementasi Tailwind CSS v4 `@theme` & Palet Warna "Tactical Broadcast Slate & Crimson Volt" di `frontend/app/globals.css`
+- [x] **`DS-002`** (`P1`) — Implementasi Sistem Tipografi 3-Tier (`Space Grotesk`, `Plus Jakarta Sans`, `JetBrains Mono`) di `frontend/app/layout.tsx` & `globals.css`
+- [x] **`DS-003`** (`P1`) — Penyelarasan Komponen UI Dasar (`Button`, `Input`, `Select`, `Card`, `Badge`, `Modal`) di `frontend/components/ui/*`
+- [x] **`BUG-001`** (`P0`) — Fix React Unique Key Warning, Blank Team Names & Group Qualification Highlight pada `StandingsTable` & `standings_service.go`
+- [x] **`BUG-002`** (`P0`) — Fix Visual Selection Feedback, Keyboard Accessibility & Payload Submission pada `CreateTournamentForm` & `TournamentSettingsForm`
+- [x] **`BUG-003`** (`P0`) — Fix Score Display & Input Binding (`score_a` / `score_b`) serta Game Name Resolution (`tournament.game`)
+- [x] **`BUG-004`** (`P0`) — Fix Battle Royale Leaderboard, Round Numbering (`round_number`), Playing Groups & Match Results Pre-population
+- [x] **`BRACKET-001`** (`P0`) — Implementasi Pemisahan `bracket_type` & Layout Presisi untuk Single/Double Elimination, Grand Final & Bronze Match
+- [x] **`BRACKET-002`** (`P0`) — Implementasi Mesin Konektor SVG Ortogonal Berbasis Slot (`next_match_slot`) & `ResizeObserver`
+- [x] **`HERO-001`** (`P1`) — Pembuatan Aset Logo Vektor 10 Game Resmi (`frontend/public/games/*.svg`) & Komponen `GameLogoBadge` dengan Fallback
+- [x] **`HERO-002`** (`P1`) — Redesign Hero Section & Interactive Bracket Preview dengan Roster 10 Game Kompetitif (Hapus Badge Tech Stack)
+- [x] **`NAV-001`** (`P1`) — Redesign Navbar (Tambah Mobile Drawer & Perbaiki Link) & Footer Produk (Hapus Link GitHub)
+- [x] **`UX-001`** (`P1`) — Eliminasi Pola AI-Slop Global pada Landing Page (`Features`, `HowItWorks`, `CTA`), `ChampionsView` & `RealtimeListener`
+- [x] **`UX-002`** (`P1`) — Penyelarasan Halaman Auth (`login`, `register`, `forgot-password`, `update-password`) & Dashboard Shell/Cards
+- [x] **`UX-003`** (`P1`) — Redesign Workspace Turnamen (`[id]/*`), Pemilih Game Visual di Create Form & Halaman Publik Penonton (`/t/[id]`)
+- [x] **`TEST-001`** (`P0`) — Verifikasi Unit & Integration Tests Backend Go (`go test ./...`)
+- [x] **`TEST-002`** (`P0`) — Verifikasi TypeScript Strict Build (`tsc --noEmit` & `next build`) dan Audit Regresi Visual
 
-Seluruh task di bawah ini siap dieksekusi secara berurutan oleh AI coding agent pada sesi implementasi berikutnya. Status awal seluruh task adalah **`TODO`**.
-
-| Task ID | Fase | Prioritas | Dependensi | Status | Ringkasan Task & Acceptance Criteria Utama |
-| :--- | :---: | :---: | :--- | :---: | :--- |
-| **`ARCH-001`** | Phase 1 | **P0 (Critical)** | - | `[x] DONE` | **Restrukturisasi Workspace, Docker Compose & Makefile**: Menyiapkan struktur `backend/`, `frontend/`, `migrations/`, `contracts/`, `docker-compose.yml` (PostgreSQL 17), dan `Makefile`. |
-| **`DB-001`** | Phase 1 | **P0 (Critical)** | `ARCH-001` | `[x] DONE` | **Migrasi Skema Murni PostgreSQL (`000001_init_schema`)**: Membuat DDL SQL murni untuk `users`, `user_sessions`, `password_reset_tokens`, `games`, `tournaments`, `stages`, `participants`, `matches`, dan `battle_royale_match_results` beserta trigger dan `CHECK` constraints. |
-| **`DB-002`** | Phase 1 | **P0 (Critical)** | `DB-001` | `[x] DONE` | **Migrasi Seed Master Games (`000002_seed_games`)**: Mengisi data awal tabel `games` untuk genre `MOBA`, `FPS`, `SPORTS`, dan `BATTLE_ROYALE` secara idempoten. |
-| **`ARCH-002`** | Phase 1 | **P0 (Critical)** | `DB-001` | `[x] DONE` | **Penyusunan Kontrak OpenAPI (`contracts/openapi.yaml`)**: Mendefinisikan kontrak REST API `/api/v1/*`, skema DTO, dan struktur error standar. |
-| **`BE-001`** | Phase 1 | **P0 (Critical)** | `ARCH-001`, `DB-001` | `[x] DONE` | **Bootstrap Server Go & Infrastruktur Database**: Mengimplementasikan `cmd/api/main.go`, `pgxpool`, helper transaksi `WithTx`, structured logging `slog`, middleware CORS/RequestID, dan `/healthz`. |
-| **`BE-002`** | Phase 2 | **P0 (Critical)** | `BE-001`, `ARCH-002` | `[x] DONE` | **Layanan Autentikasi Argon2id & Manajemen Sesi Go**: Mengimplementasikan Register, Login (email & username aman tanpa enumerasi), Logout, Forgot/Reset Password, Argon2id hashing, dan HttpOnly session cookie. |
-| **`BE-003`** | Phase 2 | **P1 (High)** | `BE-002` | `[x] DONE` | **Layanan Profil & Keamanan Pengguna (`/api/v1/users/me`)**: Mengimplementasikan endpoint baca/ubah profil (termasuk `username`) dan ganti password langsung dengan verifikasi password lama. |
-| **`BE-004`** | Phase 2 | **P1 (High)** | `BE-002`, `DB-002` | `[x] DONE` | **Endpoint Master Games & Dashboard Summary**: Mengimplementasikan `GET /api/v1/games` dan `GET /api/v1/dashboard/summary` dengan perhitungan `upcoming_matches_count` aktual. |
-| **`BE-005`** | Phase 2 | **P0 (Critical)** | `BE-004` | `[x] DONE` | **Layanan CRUD Turnamen Transaksional & Ownership Guard**: Mengimplementasikan pembuatan turnamen + stage awal dalam transaksi, filter pencarian, update pengaturan, dan hapus turnamen dengan verifikasi `owner_id` sebelum delete. |
-| **`BE-006`** | Phase 2 | **P0 (Critical)** | `BE-005` | `[x] DONE` | **Layanan CRUD Peserta & Penguncian Status Turnamen**: Mengimplementasikan tambah, edit, dan hapus peserta dengan verifikasi `owner_id` serta penolakan `409 Conflict` saat turnamen bukan `DRAFT`. |
-| **`BE-007`** | Phase 3 | **P0 (Critical)** | `BE-001` | `[x] DONE` | **Utilitas Matematika Seeding & Distribusi Grup Go (`math.go`)**: Mengimplementasikan `NextPowerOfTwo`, `StandardSeedingOrder`, `DistributeMultiSlotParticipants`, dan `DistributeTeamsToGroups`. |
-| **`BE-008`** | Phase 3 | **P0 (Critical)** | `BE-006`, `BE-007` | `[x] DONE` | **Generator Single Elimination & Bronze Match (`single_elim.go`)**: Membangun pohon match Single Elimination secara transaksional dengan auto-advance BYE dan tautan Bronze Match. |
-| **`BE-009`** | Phase 3 | **P0 (Critical)** | `BE-008` | `[x] DONE` | **Generator Double Elimination & Perbaikan BYE / LB Math (`double_elim.go`)**: Menyimpan `bracket_type` dan `loser_next_match_id` eksplisit, memperbaiki pemetaan ronde drop-down LB, dan menuntaskan auto-advance BYE di UB & LB Round 1. |
-| **`BE-010`** | Phase 3 | **P1 (High)** | `BE-007` | `[x] DONE` | **Generator Round Robin (1-Leg & 2-Leg) & Battle Royale (`round_robin.go`, `battle_royale.go`)**: Menerapkan opsi `home_away`, pembagian grup `HYBRID_UCL`, dan rotasi grup Battle Royale sesuai konfigurasi turnamen. |
-| **`BE-011`** | Phase 3 | **P1 (High)** | `BE-009`, `BE-010` | `[x] DONE` | **Kalkulator Klasemen, Leaderboard BR & Podium Juara Terpadu (`standings_service.go`)**: Memusatkan perhitungan poin Liga (`points_per_win`), poin Battle Royale (`br_point_system`), dan penentuan juara 1/2/3 untuk semua format. |
-| **`BE-012`** | Phase 3 | **P0 (Critical)** | `BE-008` s/d `BE-011` | `[x] DONE` | **Mesin Progresi Match, Validasi Best-Of, Koreksi Skor & Transisi Knockout (`progression.go`)**: Menangani update skor transaksional, koreksi pemenang yang aman, dan generasi Knockout penuh pada `HYBRID_UCL`. |
-| **`BE-013`** | Phase 4 | **P1 (High)** | `BE-012` | `[x] DONE` | **Realtime SSE Hub & Public Tournament Endpoints (`hub.go`, `public_handler.go`)**: Menyediakan stream SSE `/api/v1/public/tournaments/:id/stream` dengan heartbeat 25 detik dan event broadcast otomatis. |
-| **`DB-003`** | Phase 4 | **P2 (Medium)** | `DB-002`, `BE-012` | `[x] DONE` | **Database Seeder Development & Pengujian (`cmd/seed/main.go`)**: Menyediakan perintah `make seed` transaksional untuk membuat akun organizer dan sampel turnamen kelima format di PostgreSQL baru. |
-| **`FE-001`** | Phase 5 | **P0 (Critical)** | `ARCH-002`, `BE-002` | `[x] DONE` | **Pembersihan Dependency, TypeScript Strict & Typed API Client**: Menghapus `@supabase/*` & `@tanstack/react-query`, menyelaraskan `@types/react` v19, mengaktifkan typecheck build, dan membuat `lib/api-client.ts`. |
-| **`UX-001`** | Phase 5 | **P0 (Critical)** | `FE-001` | `[x] DONE` | **Implementasi Design System Baru, Font Geist/Inter & Komponen UI Inti**: Merombak `app/globals.css`, memperbaiki konfigurasi font di `app/layout.tsx`, dan membangun komponen `Button`, `Input`, `Modal`, `ConfirmDialog`, `Badge`, `Table`. |
-| **`UX-002`** | Phase 5 | **P1 (High)** | `UX-001`, `BE-002` | `[x] DONE` | **Redesign Landing Page & Halaman Auth (Bebas "AI Slop")**: Menghapus blur blobs & tombol gradasi neon, membuat mockup bracket interaktif di Hero, dan menyeragamkan halaman Login/Register/Forgot/Reset Password. |
-| **`FE-002`** | Phase 5 | **P1 (High)** | `UX-001`, `BE-003` s/d `BE-005` | `[x] DONE` | **Redesign Dashboard Shell, Overview, My Tournaments, Create & Profile**: Menyatukan bahasa UI ke Bahasa Indonesia, menampilkan metrik jadwal mendatang riil, dan menghubungkan halaman Profil ke endpoint ubah profil & password langsung. |
-| **`FE-003`** | Phase 5 | **P1 (High)** | `FE-002`, `BE-006` | `[x] DONE` | **Redesign Workspace Turnamen, Navigasi Tab Aktif & Manajemen Peserta**: Menampilkan nama game di header, menambahkan `TournamentTabNav` berstatus aktif, mengalihkan route `/standings` yang rusak, dan menambahkan modal Edit Peserta. |
-| **`UX-003`** | Phase 5 | **P0 (Critical)** | `FE-003`, `BE-011` s/d `BE-013` | `[x] DONE` | **Redesign Kanvas Bracket SVG, Tabel Klasemen, Battle Royale View & Halaman Publik SSE**: Mengganti konektor `div` yang rusak dengan SVG dinamis, memperbaiki `LeagueMatchCard`, menampilkan `ChampionsPodium` di semua format, dan memasang `useTournamentSSE`. |
-| **`TEST-001`** | Phase 6 | **P0 (Critical)** | `BE-012` | `[x] DONE` | **Unit Tests Algoritma Bracket, Progresi & Standings di Go**: Menguji seluruh format turnamen, kasus BYE, drop-down Lower Bracket, dan tie-breaker dengan `go test -race`. |
-| **`TEST-002`** | Phase 6 | **P0 (Critical)** | `BE-013`, `TEST-001` | `[x] DONE` | **Integration & Security Authorization Tests pada API Go + PostgreSQL**: Menguji skenario IDOR (`401`/`403`), penguncian peserta (`409`), dan integritas transaksi terhadap PostgreSQL 17. |
-| **`TEST-003`** | Phase 6 | **P0 (Critical)** | `UX-003`, `TEST-002` | `[x] DONE` | **Validasi Build Frontend Strict & End-to-End Smoke Verification**: Memastikan `npx tsc --noEmit` dan `npm run build` lulus dengan 0 error serta memverifikasi alur penuh organizer dan spectator. |

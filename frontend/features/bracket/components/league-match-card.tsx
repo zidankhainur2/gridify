@@ -20,8 +20,8 @@ export default function LeagueMatchCard({
 
   const p1 = match.participant_a;
   const p2 = match.participant_b;
-  const scoreA = match.participant_a_score ?? match.scores?.a ?? 0;
-  const scoreB = match.participant_b_score ?? match.scores?.b ?? 0;
+  const scoreA = match.score_a ?? match.participant_a_score ?? match.scores?.a ?? 0;
+  const scoreB = match.score_b ?? match.participant_b_score ?? match.scores?.b ?? 0;
 
   const isCompleted = match.status === 'COMPLETED';
   const isAWin = isCompleted && scoreA > scoreB;
@@ -36,7 +36,7 @@ export default function LeagueMatchCard({
         onClick={() => canEdit && setIsModalOpen(true)}
         className={`relative group bg-surface-raised border p-4 rounded-xl flex items-center justify-between transition-colors ${
           canEdit
-            ? 'border-border-default cursor-pointer hover:border-accent hover:bg-surface-elevated'
+            ? 'border-border-default cursor-pointer hover:border-accent hover:bg-surface-elevated shadow-xs'
             : 'border-border-subtle cursor-default'
         }`}
       >

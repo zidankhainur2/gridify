@@ -46,7 +46,7 @@ export function Modal({
           leaveFrom="opacity-100"
           leaveTo="opacity-0"
         >
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm" />
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-xs" />
         </TransitionChild>
 
         <div className="fixed inset-0 overflow-y-auto">
@@ -63,7 +63,7 @@ export function Modal({
               <DialogPanel
                 className={twMerge(
                   clsx(
-                    'w-full transform overflow-hidden rounded-xl bg-[#121215] border border-[#27272A] p-6 text-left align-middle shadow-xl transition-all',
+                    'w-full transform overflow-hidden rounded-xl bg-surface-raised border border-border-default p-6 text-left align-middle shadow-xl transition-all',
                     maxWidths[chosenSize]
                   )
                 )}
@@ -71,18 +71,18 @@ export function Modal({
                 <div className="flex items-start justify-between pb-3">
                   <div>
                     {title && (
-                      <DialogTitle className="text-base font-semibold leading-6 text-zinc-100">
+                      <DialogTitle className="text-base font-semibold leading-6 text-text-primary">
                         {title}
                       </DialogTitle>
                     )}
                     {description && (
-                      <p className="mt-1 text-xs text-zinc-400">{description}</p>
+                      <p className="mt-1 text-xs text-text-muted">{description}</p>
                     )}
                   </div>
                   <button
                     type="button"
                     onClick={onClose}
-                    className="rounded-lg p-1 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
+                    className="rounded-lg p-1 text-text-muted hover:text-text-primary hover:bg-surface-elevated transition-colors"
                   >
                     <X className="h-4 w-4" />
                   </button>

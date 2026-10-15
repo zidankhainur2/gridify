@@ -137,10 +137,10 @@ export default function DashboardLayout({
                   key={item.href}
                   href={item.href}
                   onClick={() => setIsMobileMenuOpen(false)}
-                  className={`flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                  className={`flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm transition-all ${
                     isActive
-                      ? 'bg-surface-elevated text-accent border border-border-default'
-                      : 'text-text-muted hover:text-text-primary hover:bg-surface-base'
+                      ? 'bg-accent/12 text-accent font-semibold border border-accent/25 shadow-xs'
+                      : 'text-text-muted hover:text-text-primary hover:bg-surface-base border border-transparent'
                   }`}
                 >
                   <item.icon size={18} className={isActive ? 'text-accent' : 'text-text-muted'} />
@@ -156,7 +156,7 @@ export default function DashboardLayout({
           <Link
             href="/dashboard/create"
             onClick={() => setIsMobileMenuOpen(false)}
-            className="flex items-center justify-center gap-2 w-full py-2.5 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent-hover transition-colors shadow-sm"
+            className="flex items-center justify-center gap-2 w-full py-2.5 rounded-lg bg-accent text-accent-contrast text-sm font-bold hover:bg-accent-hover transition-colors shadow-sm"
           >
             <Plus size={16} />
             <span>Buat Turnamen</span>

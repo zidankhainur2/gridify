@@ -23,19 +23,19 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     ref
   ) => {
     const baseStyles =
-      'inline-flex items-center justify-center font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#09090B] disabled:pointer-events-none disabled:opacity-50 select-none cursor-pointer';
+      'inline-flex items-center justify-center font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface-base disabled:pointer-events-none disabled:opacity-50 select-none cursor-pointer';
 
     const variants = {
       primary:
-        'bg-zinc-100 text-zinc-950 hover:bg-zinc-200 active:bg-zinc-300 shadow-sm rounded-lg',
+        'bg-accent text-accent-contrast hover:bg-accent-hover active:bg-accent-hover/90 shadow-xs rounded-lg',
       secondary:
-        'bg-[#18181B] text-zinc-200 hover:bg-[#27272A] border border-[#27272A] active:bg-[#3F3F46] rounded-lg',
+        'bg-surface-elevated text-text-primary hover:bg-surface-overlay border border-border-default hover:border-border-strong active:bg-surface-overlay/80 rounded-lg',
       outline:
-        'border border-zinc-700 bg-transparent text-zinc-200 hover:bg-zinc-800/60 active:bg-zinc-800 rounded-lg',
+        'border border-border-default bg-transparent text-text-secondary hover:text-text-primary hover:bg-surface-elevated active:bg-surface-overlay rounded-lg',
       danger:
-        'bg-rose-950/40 text-rose-300 border border-rose-800/50 hover:bg-rose-900/50 active:bg-rose-900/70 rounded-lg',
+        'bg-danger/20 text-rose-300 border border-danger/40 hover:bg-danger/30 active:bg-danger/40 rounded-lg',
       ghost:
-        'bg-transparent text-zinc-300 hover:bg-zinc-800/60 active:bg-zinc-800 rounded-lg',
+        'bg-transparent text-text-secondary hover:text-text-primary hover:bg-surface-elevated active:bg-surface-overlay rounded-lg',
     };
 
     const sizes = {

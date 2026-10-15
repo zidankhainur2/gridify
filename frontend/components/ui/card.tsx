@@ -10,7 +10,7 @@ export function Card({
     <div
       className={twMerge(
         clsx(
-          'rounded-xl border border-[#27272A] bg-[#121215] text-zinc-100 shadow-sm',
+          'rounded-xl border border-border-default bg-surface-raised text-text-primary shadow-xs',
           className
         )
       )}
@@ -38,7 +38,7 @@ export function CardTitle({
   return (
     <h3
       className={twMerge(
-        clsx('font-semibold leading-none tracking-tight text-zinc-100', className)
+        clsx('font-semibold leading-none tracking-tight text-text-primary', className)
       )}
       {...props}
     />
@@ -51,7 +51,7 @@ export function CardDescription({
 }: React.HTMLAttributes<HTMLParagraphElement>) {
   return (
     <p
-      className={twMerge(clsx('text-xs text-zinc-400', className))}
+      className={twMerge(clsx('text-xs text-text-muted', className))}
       {...props}
     />
   );
@@ -73,7 +73,7 @@ export function CardFooter({
   return (
     <div
       className={twMerge(
-        clsx('flex items-center p-5 pt-0 border-t border-[#27272A]/50 mt-4', className)
+        clsx('flex items-center p-5 pt-0 border-t border-border-subtle mt-4', className)
       )}
       {...props}
     />

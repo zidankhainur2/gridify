@@ -19,7 +19,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
         {label && (
           <label
             htmlFor={inputId}
-            className="block text-xs font-medium text-zinc-300 select-none"
+            className="block text-xs font-medium text-text-secondary select-none"
           >
             {label}
           </label>
@@ -31,10 +31,10 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
             ref={ref}
             className={twMerge(
               clsx(
-                'flex h-9 w-full rounded-lg border bg-[#121215] px-3 py-1.5 text-sm text-zinc-100 placeholder:text-zinc-500 shadow-sm transition-colors',
-                'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-400 focus-visible:border-zinc-400',
+                'flex h-9 w-full rounded-lg border bg-surface-raised px-3 py-1.5 text-sm text-text-primary placeholder:text-text-muted shadow-xs transition-colors',
+                'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent focus-visible:border-accent',
                 'disabled:cursor-not-allowed disabled:opacity-50',
-                error ? 'border-rose-500/80 focus-visible:ring-rose-500' : 'border-[#27272A] hover:border-zinc-700',
+                error ? 'border-danger focus-visible:ring-danger' : 'border-border-default hover:border-border-strong',
                 className
               )
             )}
@@ -42,9 +42,9 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
           />
         </div>
         {error ? (
-          <p className="text-xs text-rose-400 font-medium">{error}</p>
+          <p className="text-xs text-danger font-medium">{error}</p>
         ) : helperText ? (
-          <p className="text-xs text-zinc-500">{helperText}</p>
+          <p className="text-xs text-text-muted">{helperText}</p>
         ) : null}
       </div>
     );

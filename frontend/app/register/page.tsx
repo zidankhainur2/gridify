@@ -58,11 +58,20 @@ export default function RegisterPage() {
         phone: formData.phone.trim() || undefined,
       });
 
-      toast.success('Pendaftaran Berhasil!', {
-        description: 'Akun Anda telah dibuat. Mengalihkan ke dashboard...',
-      });
-      router.push('/dashboard');
-      router.refresh();
+      // Otomatis login untuk membuat sesi cookie
+      try {
+        await apiClient.auth.login(formData.username.trim(), formData.password);
+        toast.success('Pendaftaran Berhasil!', {
+          description: 'Akun Anda telah dibuat. Mengalihkan ke dashboard...',
+        });
+        router.push('/dashboard');
+        router.refresh();
+      } catch {
+        toast.success('Pendaftaran Berhasil!', {
+          description: 'Akun berhasil dibuat. Silakan login dengan akun Anda.',
+        });
+        router.push('/login');
+      }
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : 'Registrasi gagal. Coba lagi.';
@@ -163,7 +172,7 @@ export default function RegisterPage() {
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-3 text-text-muted hover:text-text-primary transition-colors"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary transition-colors focus:outline-hidden"
                   aria-label={showPassword ? 'Sembunyikan' : 'Lihat'}
                 >
                   {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
@@ -189,7 +198,7 @@ export default function RegisterPage() {
                 <button
                   type="button"
                   onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                  className="absolute right-3 top-3 text-text-muted hover:text-text-primary transition-colors"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary transition-colors focus:outline-hidden"
                   aria-label={showConfirmPassword ? 'Sembunyikan' : 'Lihat'}
                 >
                   {showConfirmPassword ? <EyeOff size={18} /> : <Eye size={18} />}

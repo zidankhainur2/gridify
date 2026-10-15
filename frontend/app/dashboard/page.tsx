@@ -11,8 +11,9 @@ import {
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { DashboardSummary, User } from '@/types/api';
-import { Badge } from '@/components/ui/badge';
+import { Badge, TournamentStatusBadge } from '@/components/ui/badge';
 import { EmptyState } from '@/components/ui/empty-state';
+import { GameLogoBadge } from '@/components/ui/game-logo';
 import { DeleteTournamentButton } from '@/features/tournaments/components/delete-tournament-button';
 
 const formatDate = (dateString: string) => {
@@ -22,19 +23,6 @@ const formatDate = (dateString: string) => {
     year: 'numeric',
   });
 };
-
-function getStatusBadgeVariant(status: string) {
-  switch (status) {
-    case 'ONGOING':
-      return 'success';
-    case 'COMPLETED':
-      return 'default';
-    case 'DRAFT':
-      return 'warning';
-    default:
-      return 'default';
-  }
-}
 
 export default async function DashboardPage() {
   let user: User;
@@ -135,7 +123,7 @@ export default async function DashboardPage() {
           )}
         </div>
 
-        {!summary.recent_tournaments || summary.recent_tournaments.length === 0 ? (
+        {(!summary.recent_tournaments || summary.recent_tournaments.length === 0) ? (
           <EmptyState
             icon={Trophy}
             title="Belum Ada Turnamen"
@@ -147,49 +135,50 @@ export default async function DashboardPage() {
           />
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {summary.recent_tournaments.map((t) => (
-              <div
-                key={t.id}
-                className="group flex flex-col justify-between p-5 rounded-xl bg-surface-raised border border-border-default hover:border-accent/40 transition-colors relative"
-              >
-                <div>
-                  <div className="flex justify-between items-start gap-2 mb-3">
-                    <Badge variant={getStatusBadgeVariant(t.status)}>
-                      {t.status}
-                    </Badge>
-                    <DeleteTournamentButton
-                      id={t.id}
-                      tournamentTitle={t.title}
-                      className="opacity-0 group-hover:opacity-100 transition-opacity"
-                    />
+            {(summary.recent_tournaments || []).map((t) => {
+              const game = t.game || t.games;
+              return (
+                <div
+                  key={t.id}
+                  className="group flex flex-col justify-between p-5 rounded-xl bg-surface-raised border border-border-default hover:border-accent/40 transition-colors relative"
+                >
+                  <div>
+                    <div className="flex justify-between items-start gap-2 mb-3">
+                      <TournamentStatusBadge status={t.status} />
+                      <DeleteTournamentButton
+                        id={t.id}
+                        tournamentTitle={t.title}
+                        className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
+                      />
+                    </div>
+
+                    <Link
+                      href={`/dashboard/tournaments/${t.id}`}
+                      className="block font-bold text-base text-text-primary hover:text-accent transition-colors line-clamp-2 mb-2"
+                    >
+                      {t.title}
+                    </Link>
+
+                    <div className="flex items-center gap-2 text-xs text-text-muted mb-4">
+                      <GameLogoBadge slug={game?.slug} name={game?.name} genre={game?.genre} size="xs" />
+                      <span className="truncate font-medium text-text-secondary">{game?.name || 'Esports'}</span>
+                    </div>
                   </div>
 
-                  <Link
-                    href={`/dashboard/tournaments/${t.id}`}
-                    className="block font-bold text-base text-text-primary hover:text-accent transition-colors line-clamp-2 mb-2"
-                  >
-                    {t.title}
-                  </Link>
-
-                  <div className="flex items-center gap-2 text-xs text-text-muted mb-4">
-                    <Gamepad2 size={14} className="shrink-0" />
-                    <span className="truncate">{t.games?.name || 'Esports'}</span>
+                  <div className="pt-3 border-t border-border-subtle flex items-center justify-between text-xs">
+                    <span className="font-mono text-text-muted">
+                      {t.format_type.replace(/_/g, ' ')}
+                    </span>
+                    <Link
+                      href={`/dashboard/tournaments/${t.id}`}
+                      className="inline-flex items-center gap-1 font-semibold text-accent hover:text-accent-hover transition-colors"
+                    >
+                      Kelola <ArrowRight size={13} />
+                    </Link>
                   </div>
                 </div>
-
-                <div className="pt-3 border-t border-border-subtle flex items-center justify-between text-xs">
-                  <span className="font-mono text-text-muted">
-                    {t.format_type.replace(/_/g, ' ')}
-                  </span>
-                  <Link
-                    href={`/dashboard/tournaments/${t.id}`}
-                    className="inline-flex items-center gap-1 font-medium text-accent hover:text-accent-hover transition-colors"
-                  >
-                    Kelola <ArrowRight size={13} />
-                  </Link>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

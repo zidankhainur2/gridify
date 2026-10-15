@@ -1,14 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Trophy } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import { Match, Participant } from '@/types/api';
 import { Modal } from '@/components/ui/modal';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 
 interface ScoreModalProps {
   isOpen: boolean;
@@ -21,17 +19,23 @@ export default function ScoreModal({
   isOpen,
   onClose,
   match,
-  allParticipants = [],
 }: ScoreModalProps) {
   const router = useRouter();
 
-  const [scoreA, setScoreA] = useState<number>(
-    match.scores?.a ?? match.participant_a_score ?? 0
-  );
-  const [scoreB, setScoreB] = useState<number>(
-    match.scores?.b ?? match.participant_b_score ?? 0
-  );
+  const getInitialA = () => match.score_a ?? match.participant_a_score ?? match.scores?.a ?? 0;
+  const getInitialB = () => match.score_b ?? match.participant_b_score ?? match.scores?.b ?? 0;
+
+  const [scoreA, setScoreA] = useState<number>(getInitialA());
+  const [scoreB, setScoreB] = useState<number>(getInitialB());
   const [isLoading, setIsLoading] = useState(false);
+
+  // Sync state whenever match or modal open state changes
+  useEffect(() => {
+    if (isOpen) {
+      setScoreA(getInitialA());
+      setScoreB(getInitialB());
+    }
+  }, [match.id, match.score_a, match.score_b, isOpen]);
 
   const p1Name = match.participant_a?.name || 'Peserta A';
   const p2Name = match.participant_b?.name || 'Peserta B';
@@ -42,6 +46,8 @@ export default function ScoreModal({
 
     try {
       await apiClient.matches.updateScore(match.tournament_id, match.id, {
+        score_a: Number(scoreA) || 0,
+        score_b: Number(scoreB) || 0,
         participant_a_score: Number(scoreA) || 0,
         participant_b_score: Number(scoreB) || 0,
       });
@@ -84,7 +90,7 @@ export default function ScoreModal({
               type="number"
               min="0"
               value={scoreA}
-              onChange={(e) => setScoreA(parseInt(e.target.value) || 0)}
+              onChange={(e) => setScoreA(parseInt(e.target.value, 10) || 0)}
               disabled={isLoading}
               className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-center text-lg font-mono font-bold text-text-primary focus:border-accent focus:ring-1 focus:ring-accent outline-none"
               placeholder="0"
@@ -117,7 +123,7 @@ export default function ScoreModal({
               type="number"
               min="0"
               value={scoreB}
-              onChange={(e) => setScoreB(parseInt(e.target.value) || 0)}
+              onChange={(e) => setScoreB(parseInt(e.target.value, 10) || 0)}
               disabled={isLoading}
               className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-2 text-center text-lg font-mono font-bold text-text-primary focus:border-accent focus:ring-1 focus:ring-accent outline-none"
               placeholder="0"
@@ -127,18 +133,17 @@ export default function ScoreModal({
         </div>
 
         {/* Action Buttons */}
-        <div className="flex justify-end gap-2 pt-3 border-t border-border-subtle">
+        <div className="flex items-center justify-end gap-3 pt-2">
           <Button
             type="button"
-            variant="secondary"
+            variant="outline"
             onClick={onClose}
             disabled={isLoading}
           >
             Batal
           </Button>
           <Button type="submit" variant="primary" isLoading={isLoading}>
-            <Trophy size={16} />
-            Simpan Hasil Skor
+            Simpan Hasil Pertandingan
           </Button>
         </div>
       </form>

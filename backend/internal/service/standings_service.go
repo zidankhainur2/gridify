@@ -12,6 +12,8 @@ import (
 )
 
 type StandingRow struct {
+	ParticipantID  uuid.UUID          `json:"participant_id"`
+	ParticipantName string            `json:"participant_name"`
 	Participant    domain.Participant `json:"participant"`
 	Played         int                `json:"played"`
 	Won            int                `json:"won"`
@@ -30,6 +32,8 @@ type GroupStanding struct {
 }
 
 type BRLeaderboardRow struct {
+	ParticipantID   uuid.UUID          `json:"participant_id"`
+	ParticipantName string             `json:"participant_name"`
 	Participant     domain.Participant `json:"participant"`
 	MatchesPlayed   int                `json:"matches_played"`
 	Wins            int                `json:"wins"` // WWCD
@@ -119,6 +123,17 @@ func (s *StandingsService) GetStageView(ctx context.Context, tournamentID, stage
 			return nil, fmt.Errorf("gagal memuat hasil battle royale: %w", err)
 		}
 		view.BRLeaderboard = CalculateBRLeaderboard(participants, brResults)
+
+		// Group results by match ID for pre-population in edit modal
+		brByMatch := make(map[uuid.UUID][]domain.BattleRoyaleMatchResult)
+		for _, res := range brResults {
+			brByMatch[res.MatchID] = append(brByMatch[res.MatchID], res)
+		}
+		for i := range view.Matches {
+			if results, ok := brByMatch[view.Matches[i].ID]; ok {
+				view.Matches[i].BRResults = results
+			}
+		}
 	}
 
 	view.Champions = DetermineChampions(tournament, stage, participants, matches, view.Standings, view.BRLeaderboard)
@@ -191,7 +206,9 @@ func CalculateRoundRobinStandings(
 		for pID := range groupParts[label] {
 			if p, ok := partMap[pID]; ok {
 				rowsMap[pID] = &StandingRow{
-					Participant: p,
+					ParticipantID:   p.ID,
+					ParticipantName: p.Name,
+					Participant:     p,
 				}
 			}
 		}
@@ -199,7 +216,9 @@ func CalculateRoundRobinStandings(
 		if len(groupParts[label]) == 0 {
 			for _, p := range participants {
 				rowsMap[p.ID] = &StandingRow{
-					Participant: p,
+					ParticipantID:   p.ID,
+					ParticipantName: p.Name,
+					Participant:     p,
 				}
 			}
 		}
@@ -309,7 +328,9 @@ func CalculateBRLeaderboard(
 	rowMap := make(map[uuid.UUID]*BRLeaderboardRow)
 	for _, p := range participants {
 		rowMap[p.ID] = &BRLeaderboardRow{
-			Participant: p,
+			ParticipantID:   p.ID,
+			ParticipantName: p.Name,
+			Participant:     p,
 		}
 	}
 
@@ -320,7 +341,11 @@ func CalculateBRLeaderboard(
 			if !hasP {
 				p = domain.Participant{ID: res.ParticipantID, Name: "Unknown"}
 			}
-			row = &BRLeaderboardRow{Participant: p}
+			row = &BRLeaderboardRow{
+				ParticipantID:   p.ID,
+				ParticipantName: p.Name,
+				Participant:     p,
+			}
 			rowMap[res.ParticipantID] = row
 		}
 

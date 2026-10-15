@@ -83,10 +83,11 @@ type Match struct {
 	NextMatchSlot     *string      `json:"next_match_slot,omitempty"`
 	LoserNextMatchID  *uuid.UUID   `json:"loser_next_match_id,omitempty"`
 	LoserNextMatchSlot *string     `json:"loser_next_match_slot,omitempty"`
-	PlayingGroups     []string     `json:"playing_groups"`
-	MapName           *string      `json:"map_name,omitempty"`
-	CreatedAt         time.Time    `json:"created_at"`
-	UpdatedAt         time.Time    `json:"updated_at"`
+	PlayingGroups     []string                  `json:"playing_groups"`
+	MapName           *string                   `json:"map_name,omitempty"`
+	BRResults         []BattleRoyaleMatchResult `json:"br_results,omitempty"`
+	CreatedAt         time.Time                 `json:"created_at"`
+	UpdatedAt         time.Time                 `json:"updated_at"`
 }
 
 type BattleRoyaleMatchResult struct {

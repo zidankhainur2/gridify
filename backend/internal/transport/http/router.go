@@ -145,6 +145,15 @@ func NewRouterWithDeps(deps RouterDeps) *chi.Mux {
 		deps.Logger,
 	)
 
+	// Route aliases for /auth (guarantees both /auth and /api/v1/auth work)
+	r.Route("/auth", func(r chi.Router) {
+		r.Post("/register", authHandler.Register)
+		r.Post("/login", authHandler.Login)
+		r.Post("/logout", authHandler.Logout)
+		r.Post("/forgot-password", authHandler.ForgotPassword)
+		r.Post("/reset-password", authHandler.ResetPassword)
+	})
+
 	// API v1
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public Auth routes

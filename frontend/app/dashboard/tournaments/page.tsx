@@ -10,8 +10,9 @@ import {
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { Tournament } from '@/types/api';
-import { Badge } from '@/components/ui/badge';
+import { Badge, TournamentStatusBadge } from '@/components/ui/badge';
 import { EmptyState } from '@/components/ui/empty-state';
+import { GameLogoBadge } from '@/components/ui/game-logo';
 import { DeleteTournamentButton } from '@/features/tournaments/components/delete-tournament-button';
 
 const formatDate = (dateString: string) => {
@@ -21,19 +22,6 @@ const formatDate = (dateString: string) => {
     year: 'numeric',
   });
 };
-
-function getStatusBadgeVariant(status: string) {
-  switch (status) {
-    case 'ONGOING':
-      return 'success';
-    case 'COMPLETED':
-      return 'default';
-    case 'DRAFT':
-      return 'warning';
-    default:
-      return 'default';
-  }
-}
 
 type SearchParams = Promise<{ q?: string; status?: string }>;
 
@@ -47,10 +35,11 @@ export default async function TournamentsPage(props: {
   let tournaments: Tournament[] = [];
 
   try {
-    tournaments = await apiClient.tournaments.list({
+    const res = await apiClient.tournaments.list({
       q: query || undefined,
       status: statusFilter === 'ALL' ? undefined : statusFilter,
     });
+    tournaments = Array.isArray(res) ? res : [];
   } catch {
     redirect('/login');
   }
@@ -79,21 +68,29 @@ export default async function TournamentsPage(props: {
       {/* Filter and Search Bar */}
       <div className="flex flex-col sm:flex-row gap-3 bg-surface-raised p-2 rounded-xl border border-border-default">
         {/* Search Input Form */}
-        <form className="relative flex-1">
-          <Search
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted"
-            size={18}
-          />
-          <input
-            type="text"
-            name="q"
-            defaultValue={query}
-            placeholder="Cari nama turnamen..."
-            className="w-full pl-9 pr-4 py-2 bg-surface-base border border-border-subtle rounded-lg text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent transition-colors"
-          />
-          {statusFilter !== 'ALL' && (
-            <input type="hidden" name="status" value={statusFilter} />
-          )}
+        <form className="relative flex-1 flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted"
+              size={18}
+            />
+            <input
+              type="text"
+              name="q"
+              defaultValue={query}
+              placeholder="Cari nama turnamen..."
+              className="w-full pl-9 pr-4 py-2 bg-surface-base border border-border-subtle rounded-lg text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent transition-colors"
+            />
+            {statusFilter !== 'ALL' && (
+              <input type="hidden" name="status" value={statusFilter} />
+            )}
+          </div>
+          <button
+            type="submit"
+            className="px-3.5 py-2 bg-surface-elevated hover:bg-surface-overlay text-text-primary border border-border-default rounded-lg text-xs font-semibold shrink-0 cursor-pointer"
+          >
+            Cari
+          </button>
         </form>
 
         {/* Status Filters */}
@@ -123,7 +120,7 @@ export default async function TournamentsPage(props: {
       </div>
 
       {/* Tournament Cards Grid */}
-      {tournaments.length === 0 ? (
+      {(!tournaments || tournaments.length === 0) ? (
         <EmptyState
           icon={Trophy}
           title={query ? 'Turnamen Tidak Ditemukan' : 'Belum Ada Turnamen'}
@@ -146,55 +143,56 @@ export default async function TournamentsPage(props: {
         />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {tournaments.map((t) => (
-            <div
-              key={t.id}
-              className="group flex flex-col justify-between p-5 rounded-xl bg-surface-raised border border-border-default hover:border-accent/40 transition-colors"
-            >
-              <div>
-                <div className="flex justify-between items-start gap-2 mb-3">
-                  <Badge variant={getStatusBadgeVariant(t.status)}>
-                    {t.status}
-                  </Badge>
-                  <DeleteTournamentButton
-                    id={t.id}
-                    tournamentTitle={t.title}
-                    className="opacity-0 group-hover:opacity-100 transition-opacity"
-                  />
+          {(tournaments || []).map((t) => {
+            const game = t.game || t.games;
+            return (
+              <div
+                key={t.id}
+                className="group flex flex-col justify-between p-5 rounded-xl bg-surface-raised border border-border-default hover:border-accent/40 transition-colors"
+              >
+                <div>
+                  <div className="flex justify-between items-start gap-2 mb-3">
+                    <TournamentStatusBadge status={t.status} />
+                    <DeleteTournamentButton
+                      id={t.id}
+                      tournamentTitle={t.title}
+                      className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
+                    />
+                  </div>
+
+                  <Link
+                    href={`/dashboard/tournaments/${t.id}`}
+                    className="block font-bold text-base text-text-primary hover:text-accent transition-colors line-clamp-2 mb-2"
+                  >
+                    {t.title}
+                  </Link>
+
+                  <div className="space-y-1.5 text-xs text-text-muted mb-4">
+                    <div className="flex items-center gap-2">
+                      <GameLogoBadge slug={game?.slug} name={game?.name} genre={game?.genre} size="xs" />
+                      <span className="truncate font-medium text-text-secondary">{game?.name || 'Esports'}</span>
+                    </div>
+                    <div className="flex items-center gap-2 pl-0.5">
+                      <Calendar size={14} className="shrink-0" />
+                      <span className="font-mono">{formatDate(t.created_at)}</span>
+                    </div>
+                  </div>
                 </div>
 
-                <Link
-                  href={`/dashboard/tournaments/${t.id}`}
-                  className="block font-bold text-base text-text-primary hover:text-accent transition-colors line-clamp-2 mb-2"
-                >
-                  {t.title}
-                </Link>
-
-                <div className="space-y-1 text-xs text-text-muted mb-4">
-                  <div className="flex items-center gap-2">
-                    <Gamepad2 size={14} className="shrink-0" />
-                    <span className="truncate">{t.games?.name || 'Esports'}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Calendar size={14} className="shrink-0" />
-                    <span className="font-mono">{formatDate(t.created_at)}</span>
-                  </div>
+                <div className="pt-3 border-t border-border-subtle flex items-center justify-between text-xs">
+                  <span className="font-mono text-text-muted uppercase text-[11px]">
+                    {t.format_type.replace(/_/g, ' ')}
+                  </span>
+                  <Link
+                    href={`/dashboard/tournaments/${t.id}`}
+                    className="inline-flex items-center gap-1 font-semibold text-accent hover:text-accent-hover transition-colors"
+                  >
+                    Kelola <ArrowRight size={13} />
+                  </Link>
                 </div>
               </div>
-
-              <div className="pt-3 border-t border-border-subtle flex items-center justify-between text-xs">
-                <span className="font-mono text-text-muted uppercase text-[11px]">
-                  {t.format_type.replace(/_/g, ' ')}
-                </span>
-                <Link
-                  href={`/dashboard/tournaments/${t.id}`}
-                  className="inline-flex items-center gap-1 font-medium text-accent hover:text-accent-hover transition-colors"
-                >
-                  Kelola <ArrowRight size={13} />
-                </Link>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

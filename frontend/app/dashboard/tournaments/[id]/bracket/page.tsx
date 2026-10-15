@@ -47,8 +47,10 @@ export default async function BracketPage({
 
   const matches = stageViewData?.matches || [];
   const standings = stageViewData?.standings || [];
-  const champions = stageViewData?.champions || [];
+  const brLeaderboard = stageViewData?.br_leaderboard || [];
+  const champions = stageViewData?.champions;
   const hasBracket = matches.length > 0;
+  const isKnockoutStageActive = activeStage?.sequence_order ? activeStage.sequence_order > 1 : false;
 
   return (
     <div className="space-y-6 h-full flex flex-col animate-in fade-in duration-200">
@@ -139,6 +141,9 @@ export default async function BracketPage({
                 participants={participants}
                 tournamentId={id}
                 standings={standings}
+                tournament={tournament}
+                champions={champions}
+                hasKnockoutMatches={isKnockoutStageActive}
                 isReadOnly={false}
               />
             )}
@@ -159,6 +164,9 @@ export default async function BracketPage({
                 matches={matches}
                 participants={participants}
                 tournamentId={id}
+                brLeaderboard={brLeaderboard}
+                champions={champions}
+                tournament={tournament}
                 isReadOnly={false}
               />
             )}

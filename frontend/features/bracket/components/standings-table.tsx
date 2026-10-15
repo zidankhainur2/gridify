@@ -3,13 +3,17 @@
 import { Swords, Trophy, Medal } from 'lucide-react';
 import LeagueMatchCard from './league-match-card';
 import AdvanceButton from './advance-button';
-import { Match, Participant, StandingRow, GroupStanding } from '@/types/api';
+import ChampionsView from './champions-view';
+import { Match, Participant, StandingRow, GroupStanding, Tournament, Champions, ChampionResult } from '@/types/api';
 
 interface StandingsTableProps {
   matches: Match[];
   participants: Participant[];
   tournamentId: string;
   standings?: GroupStanding[] | StandingRow[];
+  tournament?: Tournament;
+  champions?: Champions | ChampionResult[];
+  hasKnockoutMatches?: boolean;
   isReadOnly?: boolean;
 }
 
@@ -18,9 +22,11 @@ export default function StandingsTable({
   participants,
   tournamentId,
   standings,
+  tournament,
+  champions,
+  hasKnockoutMatches = false,
   isReadOnly = false,
 }: StandingsTableProps) {
-  // 1. Grouping standings by group_name jika ada (misal UCL Group A, B, dll)
   const participantMap = new Map<string, Participant>();
   participants.forEach((p) => participantMap.set(p.id, p));
 
@@ -31,15 +37,23 @@ export default function StandingsTable({
         const flat: StandingRow[] = [];
         (standings as GroupStanding[]).forEach((g) => {
           g.rows.forEach((r) => {
+            const pId = r.participant?.id || r.participant_id || '';
+            const pName = r.participant?.name || r.participant_name || 'Peserta';
             flat.push({
               ...r,
+              participant_id: pId,
+              participant_name: pName,
               group_name: r.group_name || g.group_label,
             });
           });
         });
         return flat;
       }
-      return standings as StandingRow[];
+      return (standings as StandingRow[]).map((r) => ({
+        ...r,
+        participant_id: r.participant?.id || r.participant_id || '',
+        participant_name: r.participant?.name || r.participant_name || 'Peserta',
+      }));
     }
 
     const rowMap = new Map<string, StandingRow>();
@@ -63,8 +77,8 @@ export default function StandingsTable({
 
     matches.forEach((m) => {
       if (m.status === 'COMPLETED') {
-        const sA = m.participant_a_score ?? m.scores?.a ?? 0;
-        const sB = m.participant_b_score ?? m.scores?.b ?? 0;
+        const sA = m.score_a ?? m.participant_a_score ?? m.scores?.a ?? 0;
+        const sB = m.score_b ?? m.participant_b_score ?? m.scores?.b ?? 0;
         const rA = m.participant_a_id ? rowMap.get(m.participant_a_id) : null;
         const rB = m.participant_b_id ? rowMap.get(m.participant_b_id) : null;
 
@@ -79,19 +93,22 @@ export default function StandingsTable({
           rB.goals_against += sA;
           rB.goal_difference = rB.goals_for - rB.goals_against;
 
+          const ptsWin = tournament?.points_per_win || 3;
+          const ptsDraw = tournament?.points_per_draw || 1;
+
           if (sA > sB) {
             rA.won++;
-            rA.points += 3;
+            rA.points += ptsWin;
             rB.lost++;
           } else if (sB > sA) {
             rB.won++;
-            rB.points += 3;
+            rB.points += ptsWin;
             rA.lost++;
           } else {
             rA.drawn++;
-            rA.points += 1;
+            rA.points += ptsDraw;
             rB.drawn++;
-            rB.points += 1;
+            rB.points += ptsDraw;
           }
         }
       }
@@ -119,96 +136,117 @@ export default function StandingsTable({
 
   return (
     <div className="space-y-8">
-      {/* Tables Per Group */}
-      {Array.from(groupedStandings.entries()).map(([grpName, rows]) => (
-        <div
-          key={grpName}
-          className="rounded-xl bg-surface-raised border border-border-default overflow-hidden shadow-xs"
-        >
-          <div className="px-6 py-3.5 border-b border-border-subtle bg-surface-elevated flex items-center justify-between">
-            <h3 className="font-bold text-sm text-text-primary flex items-center gap-2">
-              <Trophy size={16} className="text-accent" />
-              <span>{grpName}</span>
-            </h3>
-            <span className="text-[11px] font-mono text-text-muted">
-              {rows.length} Tim Terdaftar
-            </span>
-          </div>
+      {/* Champions Banner for finished Round Robin or Stage with Champions */}
+      {champions && isFinished && (
+        <ChampionsView
+          tournament={tournament}
+          matches={matches}
+          participants={participants}
+          champions={champions}
+          standings={calculatedRows}
+        />
+      )}
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs text-left">
-              <thead className="bg-surface-base text-text-muted font-mono uppercase text-[10px] tracking-wider border-b border-border-subtle">
-                <tr>
-                  <th className="px-4 py-3 text-center w-12">#</th>
-                  <th className="px-4 py-3">Tim / Pemain</th>
-                  <th className="px-3 py-3 text-center w-14">MP</th>
-                  <th className="px-3 py-3 text-center w-14 text-emerald-400">W</th>
-                  <th className="px-3 py-3 text-center w-14 text-text-muted">D</th>
-                  <th className="px-3 py-3 text-center w-14 text-rose-400">L</th>
-                  <th className="px-3 py-3 text-center w-16">GD</th>
-                  <th className="px-4 py-3 text-center w-18 font-bold text-text-primary">
-                    PTS
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border-subtle">
-                {rows.map((row, idx) => (
-                  <tr
-                    key={row.participant_id}
-                    className={`hover:bg-surface-elevated/40 transition-colors ${
-                      idx < 2 && grpName.includes('Group')
-                        ? 'bg-accent/5'
-                        : ''
-                    }`}
-                  >
-                    <td className="px-4 py-3 text-center font-mono font-medium text-text-muted">
-                      {idx === 0 ? (
-                        <Medal size={15} className="text-amber-400 mx-auto" />
-                      ) : idx === 1 ? (
-                        <Medal size={15} className="text-zinc-400 mx-auto" />
-                      ) : idx === 2 ? (
-                        <Medal size={15} className="text-amber-700 mx-auto" />
-                      ) : (
-                        idx + 1
-                      )}
-                    </td>
-                    <td className="px-4 py-3 font-semibold text-text-primary">
-                      <div className="flex items-center gap-2">
-                        <span>{row.participant_name}</span>
-                        {idx < 2 && grpName.includes('Group') && (
-                          <span className="text-[9px] font-mono bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold">
-                            Q
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-3 py-3 text-center font-mono text-text-secondary">
-                      {row.played}
-                    </td>
-                    <td className="px-3 py-3 text-center font-mono text-emerald-400 font-medium">
-                      {row.won}
-                    </td>
-                    <td className="px-3 py-3 text-center font-mono text-text-muted">
-                      {row.drawn}
-                    </td>
-                    <td className="px-3 py-3 text-center font-mono text-rose-400">
-                      {row.lost}
-                    </td>
-                    <td className="px-3 py-3 text-center font-mono text-text-muted">
-                      {row.goal_difference > 0
-                        ? `+${row.goal_difference}`
-                        : row.goal_difference}
-                    </td>
-                    <td className="px-4 py-3 text-center font-mono font-bold text-sm text-accent">
-                      {row.points}
-                    </td>
+      {/* Tables Per Group */}
+      {Array.from(groupedStandings.entries()).map(([grpName, rows]) => {
+        const isMultiGroup =
+          groupedStandings.size > 1 ||
+          grpName.toLowerCase().startsWith('grup') ||
+          grpName.toLowerCase().startsWith('group');
+
+        return (
+          <div
+            key={grpName}
+            className="rounded-xl bg-surface-raised border border-border-default overflow-hidden shadow-xs"
+          >
+            <div className="px-6 py-3.5 border-b border-border-subtle bg-surface-elevated flex items-center justify-between">
+              <h3 className="font-bold text-sm text-text-primary flex items-center gap-2">
+                <Trophy size={16} className="text-accent" />
+                <span>{grpName}</span>
+              </h3>
+              <span className="text-[11px] font-mono text-text-muted">
+                {rows.length} Tim Terdaftar
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs text-left">
+                <thead className="bg-surface-base text-text-muted font-mono uppercase text-[10px] tracking-wider border-b border-border-subtle">
+                  <tr>
+                    <th className="px-4 py-3 text-center w-12">#</th>
+                    <th className="px-4 py-3">Tim / Pemain</th>
+                    <th className="px-3 py-3 text-center w-14">MP</th>
+                    <th className="px-3 py-3 text-center w-14 text-emerald-400">W</th>
+                    <th className="px-3 py-3 text-center w-14 text-text-muted">D</th>
+                    <th className="px-3 py-3 text-center w-14 text-rose-400">L</th>
+                    <th className="px-3 py-3 text-center w-16">GD</th>
+                    <th className="px-4 py-3 text-center w-18 font-bold text-text-primary">
+                      PTS
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-border-subtle">
+                  {rows.map((row, idx) => {
+                    const rowKey = `${grpName}-${row.participant?.id || row.participant_id || idx}`;
+                    const isQualified = isMultiGroup && idx < 2;
+
+                    return (
+                      <tr
+                        key={rowKey}
+                        className={`hover:bg-surface-elevated/40 transition-colors ${
+                          isQualified ? 'bg-accent/5' : ''
+                        }`}
+                      >
+                        <td className="px-4 py-3 text-center font-mono font-medium text-text-muted">
+                          {idx === 0 ? (
+                            <Medal size={15} className="text-amber-400 mx-auto" />
+                          ) : idx === 1 ? (
+                            <Medal size={15} className="text-slate-400 mx-auto" />
+                          ) : idx === 2 ? (
+                            <Medal size={15} className="text-amber-600 mx-auto" />
+                          ) : (
+                            idx + 1
+                          )}
+                        </td>
+                        <td className="px-4 py-3 font-semibold text-text-primary">
+                          <div className="flex items-center gap-2">
+                            <span>{row.participant_name}</span>
+                            {isQualified && (
+                              <span className="text-[9px] font-mono bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-bold">
+                                Q
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 text-center font-mono text-text-secondary">
+                          {row.played}
+                        </td>
+                        <td className="px-3 py-3 text-center font-mono text-emerald-400 font-medium">
+                          {row.won}
+                        </td>
+                        <td className="px-3 py-3 text-center font-mono text-text-muted">
+                          {row.drawn}
+                        </td>
+                        <td className="px-3 py-3 text-center font-mono text-rose-400">
+                          {row.lost}
+                        </td>
+                        <td className="px-3 py-3 text-center font-mono text-text-muted">
+                          {row.goal_difference > 0
+                            ? `+${row.goal_difference}`
+                            : row.goal_difference}
+                        </td>
+                        <td className="px-4 py-3 text-center font-mono font-bold text-sm text-accent">
+                          {row.points}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
 
       {/* Match Schedule List */}
       <div className="pt-4 space-y-4">
@@ -231,14 +269,14 @@ export default function StandingsTable({
         </div>
 
         {matches.length === 0 && (
-          <div className="text-center py-8 rounded-xl bg-surface-raised border border-border-dashed border-border-default text-text-muted text-xs">
+          <div className="text-center py-8 rounded-xl bg-surface-raised border border-dashed border-border-default text-text-muted text-xs">
             Belum ada jadwal pertandingan.
           </div>
         )}
       </div>
 
-      {/* Advance to Knockout Action */}
-      {isFinished && !isReadOnly && (
+      {/* Advance to Knockout Action: Only for HYBRID_UCL when knockout stage doesn't have matches yet */}
+      {tournament?.format_type === 'HYBRID_UCL' && !hasKnockoutMatches && isFinished && !isReadOnly && (
         <AdvanceButton tournamentId={tournamentId} />
       )}
     </div>

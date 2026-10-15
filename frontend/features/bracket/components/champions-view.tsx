@@ -4,17 +4,17 @@ import { Trophy, Medal, Award } from 'lucide-react';
 import { Tournament, Match, Participant, ChampionResult, Champions } from '@/types/api';
 
 interface ChampionsViewProps {
-  tournament: Tournament;
-  matches: Match[];
-  participants: Participant[];
+  tournament?: Tournament;
+  matches?: Match[];
+  participants?: Participant[];
   champions?: Champions | ChampionResult[];
   standings?: any[];
 }
 
 export default function ChampionsView({
   tournament,
-  matches,
-  participants,
+  matches = [],
+  participants = [],
   champions,
   standings,
 }: ChampionsViewProps) {
@@ -38,7 +38,7 @@ export default function ChampionsView({
   }
 
   // 2. Fallback untuk Elimination: Jika belum ada champions array dari backend
-  if (!first && (tournament.format_type === 'SINGLE_ELIMINATION' || tournament.format_type === 'DOUBLE_ELIMINATION')) {
+  if (!first && tournament && (tournament.format_type === 'SINGLE_ELIMINATION' || tournament.format_type === 'DOUBLE_ELIMINATION')) {
     const completedMatches = matches.filter((m) => m.status === 'COMPLETED');
     const endMatches = completedMatches
       .filter((m) => !m.next_match_id)
@@ -67,75 +67,75 @@ export default function ChampionsView({
     third = standings[2]?.participant || participants.find((p) => p.id === standings[2]?.participant_id) || null;
   }
 
-  // Jika belum ada pemenang, jangan render podium
+  // Jika belum ada pemenang, jangan render banner podium
   if (!first) return null;
 
   return (
-    <div className="w-full flex flex-col items-center justify-center p-6 md:p-8 rounded-xl bg-surface-raised border border-border-default shadow-sm mb-6 animate-in fade-in duration-300">
-      <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface-elevated border border-border-default text-xs font-mono text-amber-400 mb-8">
-        <Trophy size={14} />
-        <span>PODIUM JUARA TURNAMEN</span>
+    <div className="w-full rounded-xl bg-surface-raised border border-border-default overflow-hidden shadow-xs mb-6">
+      <div className="px-5 py-3 border-b border-border-subtle bg-surface-elevated/70 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Trophy className="h-4 w-4 text-amber-400" />
+          <span className="font-display font-semibold text-xs tracking-wider uppercase text-text-primary">
+            Podium Kejuaraan
+          </span>
+        </div>
+        <span className="text-[11px] font-mono font-medium text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+          TURNAMEN SELESAI
+        </span>
       </div>
 
-      <div className="flex items-end justify-center gap-3 sm:gap-6 md:gap-12 w-full max-w-2xl px-2">
-        {/* Juara 2 (Perak) */}
-        {second && (
-          <div className="flex flex-col items-center flex-1 order-1">
-            <div className="w-12 h-12 md:w-14 md:h-14 rounded-full bg-zinc-800 border-2 border-zinc-500 flex items-center justify-center text-zinc-300 shadow-xs mb-3">
-              <Medal size={24} />
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 p-4">
+        {/* Juara 2 (Runner-Up) */}
+        {second ? (
+          <div className="flex items-center gap-3.5 p-3.5 rounded-lg bg-surface-base border border-border-default order-2 md:order-1">
+            <div className="h-10 w-10 shrink-0 rounded-full bg-slate-800/80 border border-slate-600 flex items-center justify-center text-slate-300 font-bold text-sm">
+              <Medal className="h-5 w-5 text-slate-300" />
             </div>
-            <div className="text-center w-full">
-              <p className="font-bold text-sm md:text-base text-text-primary truncate">
-                {second.name}
-              </p>
-              <span className="text-[11px] font-mono font-medium text-text-muted uppercase">
+            <div className="min-w-0 flex-1">
+              <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-slate-400">
                 Juara 2 • Runner-Up
               </span>
-            </div>
-            <div className="w-full h-16 md:h-20 bg-surface-elevated rounded-t-lg border-t-2 border-zinc-500/60 mt-3 flex items-center justify-center font-mono font-black text-xl text-zinc-400">
-              2
+              <p className="font-semibold text-sm text-text-primary truncate">
+                {second.name}
+              </p>
             </div>
           </div>
+        ) : (
+          <div className="hidden md:block order-2 md:order-1" />
         )}
 
-        {/* Juara 1 (Emas) - Tengah & Tertinggi */}
-        {first && (
-          <div className="flex flex-col items-center flex-1 order-2 z-10">
-            <div className="w-16 h-16 md:w-20 md:h-20 rounded-full bg-amber-500/10 border-2 border-amber-400 flex items-center justify-center text-amber-400 shadow-md mb-3">
-              <Trophy size={32} />
-            </div>
-            <div className="text-center w-full">
-              <p className="font-black text-base md:text-xl text-text-primary truncate">
-                {first.name}
-              </p>
-              <span className="text-xs font-mono font-bold text-amber-400 uppercase tracking-wide">
-                Juara 1 • Champion
-              </span>
-            </div>
-            <div className="w-full h-24 md:h-28 bg-surface-elevated rounded-t-lg border-t-2 border-amber-400 mt-3 flex items-center justify-center font-mono font-black text-3xl text-amber-400">
-              1
-            </div>
+        {/* Juara 1 (Champion) - High-contrast Gold Highlight */}
+        <div className="flex items-center gap-3.5 p-3.5 rounded-lg bg-amber-500/10 border-2 border-amber-400/80 shadow-xs order-1 md:order-2">
+          <div className="h-11 w-11 shrink-0 rounded-full bg-amber-400 text-slate-950 flex items-center justify-center font-bold text-base shadow-xs">
+            <Trophy className="h-6 w-6" />
           </div>
-        )}
+          <div className="min-w-0 flex-1">
+            <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-amber-400">
+              Juara 1 • Champion
+            </span>
+            <p className="font-display font-bold text-base text-text-primary truncate">
+              {first.name}
+            </p>
+          </div>
+        </div>
 
-        {/* Juara 3 (Perunggu) */}
-        {third && (
-          <div className="flex flex-col items-center flex-1 order-3">
-            <div className="w-12 h-12 md:w-14 md:h-14 rounded-full bg-amber-900/30 border-2 border-amber-700 flex items-center justify-center text-amber-600 shadow-xs mb-3">
-              <Award size={24} />
+        {/* Juara 3 (Bronze) */}
+        {third ? (
+          <div className="flex items-center gap-3.5 p-3.5 rounded-lg bg-surface-base border border-border-default order-3">
+            <div className="h-10 w-10 shrink-0 rounded-full bg-amber-950/40 border border-amber-800/60 flex items-center justify-center text-amber-500 font-bold text-sm">
+              <Award className="h-5 w-5 text-amber-500" />
             </div>
-            <div className="text-center w-full">
-              <p className="font-bold text-sm md:text-base text-text-primary truncate">
-                {third.name}
-              </p>
-              <span className="text-[11px] font-mono font-medium text-text-muted uppercase">
+            <div className="min-w-0 flex-1">
+              <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-amber-600">
                 Juara 3 • Bronze
               </span>
-            </div>
-            <div className="w-full h-12 md:h-16 bg-surface-elevated rounded-t-lg border-t-2 border-amber-700/60 mt-3 flex items-center justify-center font-mono font-black text-lg text-amber-700">
-              3
+              <p className="font-semibold text-sm text-text-primary truncate">
+                {third.name}
+              </p>
             </div>
           </div>
+        ) : (
+          <div className="hidden md:block order-3" />
         )}
       </div>
     </div>

@@ -2,22 +2,22 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import {
   Calendar,
-  Trophy,
   Users,
   Gamepad2,
   LayoutList,
   GitGraph,
   Target,
-  Share2,
+  Trophy,
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
-import { Tournament, Stage, Participant, Match, StageViewData } from '@/types/api';
+import { Participant, StageViewData } from '@/types/api';
 import BracketVisualizer from '@/features/bracket/components/bracket-visualizer';
 import StandingsTable from '@/features/bracket/components/standings-table';
 import BattleRoyaleView from '@/features/bracket/components/br-view';
 import RealtimeListener from '@/components/providers/tournament/realtime-listener';
-import { Badge } from '@/components/ui/badge';
+import { Badge, TournamentStatusBadge } from '@/components/ui/badge';
 import ShareButton from '@/features/tournaments/components/share-button';
+import { GameLogoBadge } from '@/components/ui/game-logo';
 
 export const dynamic = 'force-dynamic';
 
@@ -62,12 +62,28 @@ export default async function PublicTournamentPage({
   if (standings) {
     standings.forEach((g) => {
       g.rows?.forEach((r) => {
-        if (r.participant) participantMap.set(r.participant.id, r.participant);
+        if (r.participant) {
+          participantMap.set(r.participant.id, r.participant);
+        } else if (r.participant_id) {
+          participantMap.set(r.participant_id, {
+            id: r.participant_id,
+            name: r.participant_name || 'Peserta',
+            tournament_id: id,
+            seed_number: 0,
+            is_verified: true,
+            created_at: '',
+          });
+        }
       });
     });
   }
   const participants = Array.from(participantMap.values());
   const hasBracket = matches.length > 0;
+  const game = tournament.game || tournament.games;
+  const gameName = game?.name || 'Esports';
+  const hasKnockoutMatches = stages.some(
+    (s) => s.type === 'SINGLE_ELIMINATION' || s.type === 'DOUBLE_ELIMINATION'
+  );
 
   const formatDate = (dateStr: string) => {
     return new Date(dateStr).toLocaleDateString('id-ID', {
@@ -84,19 +100,19 @@ export default async function PublicTournamentPage({
 
       {/* Top Navbar */}
       <header className="border-b border-border-default bg-surface-raised/90 backdrop-blur-md sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-4 md:px-8 py-3.5 flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-surface-elevated border border-border-default flex items-center justify-center text-accent">
+        <div className="max-w-7xl mx-auto px-4 md:px-8 py-3 flex items-center justify-between">
+          <Link href="/" className="flex items-center gap-2.5 group">
+            <div className="w-8 h-8 rounded-lg bg-surface-elevated border border-border-default flex items-center justify-center text-accent group-hover:border-accent/40 transition-colors">
               <Gamepad2 size={18} />
             </div>
-            <span className="font-bold tracking-tight text-text-primary">Gridify</span>
+            <span className="font-display font-bold tracking-tight text-text-primary">Gridify</span>
           </Link>
 
           <div className="flex items-center gap-3">
             <ShareButton tournamentId={id} />
             <Link
               href="/login"
-              className="text-xs font-medium text-text-muted hover:text-text-primary px-3 py-1.5 rounded-lg border border-border-subtle hover:border-border-default transition-colors"
+              className="text-xs font-semibold text-text-muted hover:text-text-primary px-3 py-1.5 rounded-lg border border-border-subtle hover:border-border-default bg-surface-elevated/50 transition-colors"
             >
               Masuk Organizer
             </Link>
@@ -104,61 +120,56 @@ export default async function PublicTournamentPage({
         </div>
       </header>
 
-      {/* Hero Tournament Spectator Banner */}
-      <div className="border-b border-border-default bg-surface-raised/50 py-12 md:py-16 px-4 md:px-8">
-        <div className="max-w-4xl mx-auto text-center space-y-4">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface-elevated border border-border-default text-xs font-mono text-accent">
-            <Trophy size={14} />
-            <span>SPECTATOR LIVE VIEW</span>
+      {/* Compact Broadcast Header (paruh atas layar terlihat langsung) */}
+      <div className="border-b border-border-default bg-surface-raised/60 py-6 md:py-8 px-4 md:px-8">
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-6">
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <GameLogoBadge
+                slug={game?.slug}
+                gameName={gameName}
+                size="sm"
+                className="shadow-xs"
+              />
+              <span className="text-xs font-mono font-medium text-text-muted uppercase tracking-wider">
+                {gameName}
+              </span>
+              <span className="text-border-strong text-xs">•</span>
+              <TournamentStatusBadge status={tournament.status} />
+            </div>
+
+            <h1 className="text-2xl md:text-3xl lg:text-4xl font-display font-bold tracking-tight text-text-primary">
+              {tournament.title}
+            </h1>
+
+            {tournament.description && (
+              <p className="text-xs md:text-sm text-text-secondary max-w-2xl leading-relaxed">
+                {tournament.description}
+              </p>
+            )}
           </div>
 
-          <h1 className="text-3xl md:text-5xl font-black tracking-tight text-text-primary">
-            {tournament.title}
-          </h1>
-
-          {tournament.description && (
-            <p className="text-sm md:text-base text-text-muted max-w-2xl mx-auto leading-relaxed">
-              {tournament.description}
-            </p>
-          )}
-
-          {/* Quick Info Capsule */}
-          <div className="flex flex-wrap justify-center items-center gap-3 pt-2 text-xs text-text-muted">
+          {/* Quick Stats Capsule */}
+          <div className="flex items-center gap-2 self-start md:self-auto flex-wrap text-xs text-text-muted">
             <div className="flex items-center gap-1.5 bg-surface-elevated px-3 py-1.5 rounded-lg border border-border-subtle">
-              <Gamepad2 size={14} className="text-accent" />
-              <span className="font-medium text-text-primary">
-                {tournament.games?.name || 'Esports'}
-              </span>
-            </div>
-            <div className="flex items-center gap-1.5 bg-surface-elevated px-3 py-1.5 rounded-lg border border-border-subtle">
-              <Users size={14} className="text-sky-400" />
-              <span className="font-mono">{participants.length} Peserta</span>
+              <Users size={14} className="text-secondary" />
+              <span className="font-mono font-medium text-text-primary">{participants.length}</span>
+              <span>Peserta</span>
             </div>
             <div className="flex items-center gap-1.5 bg-surface-elevated px-3 py-1.5 rounded-lg border border-border-subtle">
               <Calendar size={14} className="text-amber-400" />
               <span className="font-mono">{formatDate(tournament.created_at)}</span>
             </div>
-            <Badge
-              variant={
-                tournament.status === 'ONGOING'
-                  ? 'success'
-                  : tournament.status === 'COMPLETED'
-                  ? 'default'
-                  : 'warning'
-              }
-            >
-              {tournament.status}
-            </Badge>
           </div>
         </div>
       </div>
 
       {/* Main Bracket Content */}
-      <main className="max-w-7xl mx-auto px-4 md:px-8 py-8 md:py-12 space-y-8">
+      <main className="max-w-7xl mx-auto px-4 md:px-8 py-6 md:py-8 space-y-6">
         {/* Stage Selection Navigation */}
         {stages.length > 1 && (
-          <div className="flex justify-center">
-            <div className="flex bg-surface-raised p-1 rounded-lg border border-border-default overflow-x-auto">
+          <div className="flex justify-start md:justify-center overflow-x-auto pb-1">
+            <div className="flex bg-surface-raised p-1 rounded-lg border border-border-default gap-1">
               {stages.map((s) => (
                 <Link
                   key={s.id}
@@ -166,7 +177,7 @@ export default async function PublicTournamentPage({
                   className={`px-4 py-2 rounded-md text-xs font-medium transition-colors whitespace-nowrap ${
                     activeStage?.id === s.id
                       ? 'bg-surface-elevated text-text-primary border border-border-subtle shadow-xs font-bold'
-                      : 'text-text-muted hover:text-text-primary'
+                      : 'text-text-muted hover:text-text-primary hover:bg-surface-elevated/40'
                   }`}
                 >
                   {s.name}
@@ -178,13 +189,13 @@ export default async function PublicTournamentPage({
 
         {/* Stage View Canvas */}
         {!activeStage ? (
-          <div className="text-center py-20 text-text-muted text-sm">
+          <div className="text-center py-16 text-text-muted text-sm bg-surface-raised/40 rounded-xl border border-border-subtle">
             Belum ada jadwal pertandingan yang dirilis.
           </div>
         ) : !hasBracket ? (
-          <div className="text-center py-20 rounded-xl bg-surface-raised border border-border-dashed border-border-default space-y-2">
+          <div className="text-center py-16 rounded-xl bg-surface-raised border border-border-dashed border-border-default space-y-2">
             <Trophy size={28} className="mx-auto text-text-muted opacity-40 mb-2" />
-            <h3 className="font-bold text-base text-text-primary">
+            <h3 className="font-display font-bold text-base text-text-primary">
               Bagan Belum Dirilis
             </h3>
             <p className="text-xs text-text-muted max-w-sm mx-auto">
@@ -195,13 +206,13 @@ export default async function PublicTournamentPage({
           <div className="space-y-6">
             <div className="flex items-center gap-2.5 pb-2 border-b border-border-subtle">
               {activeStage.type === 'ROUND_ROBIN' ? (
-                <LayoutList size={20} className="text-sky-400" />
+                <LayoutList size={20} className="text-secondary" />
               ) : activeStage.type === 'LEADERBOARD' ? (
-                <Target size={20} className="text-rose-400" />
+                <Target size={20} className="text-accent" />
               ) : (
                 <GitGraph size={20} className="text-accent" />
               )}
-              <h2 className="text-lg font-bold text-text-primary">
+              <h2 className="text-base md:text-lg font-display font-bold text-text-primary">
                 {activeStage.type === 'ROUND_ROBIN'
                   ? 'Klasemen Babak Grup / Liga'
                   : activeStage.type === 'LEADERBOARD'
@@ -218,6 +229,9 @@ export default async function PublicTournamentPage({
                 tournamentId={id}
                 standings={standings}
                 isReadOnly={true}
+                champions={champions}
+                tournament={tournament}
+                hasKnockoutMatches={hasKnockoutMatches}
               />
             )}
 
@@ -238,6 +252,9 @@ export default async function PublicTournamentPage({
                 participants={participants}
                 tournamentId={id}
                 isReadOnly={true}
+                brLeaderboard={stageViewData.br_leaderboard}
+                champions={champions}
+                tournament={tournament}
               />
             )}
           </div>
@@ -246,7 +263,7 @@ export default async function PublicTournamentPage({
 
       {/* Footer */}
       <footer className="border-t border-border-subtle py-8 text-center text-xs font-mono text-text-muted">
-        © {new Date().getFullYear()} Gridify. Esports Tournament System.
+        © {new Date().getFullYear()} Gridify. Realtime Esports Tournament Platform.
       </footer>
     </div>
   );

@@ -4,26 +4,14 @@ import { notFound, redirect } from 'next/navigation';
 import { Trophy, ChevronLeft, Share2, Gamepad2, Radio } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { Tournament } from '@/types/api';
-import { Badge } from '@/components/ui/badge';
+import { TournamentStatusBadge } from '@/components/ui/badge';
+import { GameLogoBadge } from '@/components/ui/game-logo';
 import { TournamentTabNav } from '@/features/tournaments/components/tournament-tab-nav';
 
 type Props = {
   children: ReactNode;
   params: Promise<{ id: string }>;
 };
-
-function getStatusBadgeVariant(status: string) {
-  switch (status) {
-    case 'ONGOING':
-      return 'success';
-    case 'COMPLETED':
-      return 'default';
-    case 'DRAFT':
-      return 'warning';
-    default:
-      return 'default';
-  }
-}
 
 export default async function TournamentLayout({ children, params }: Props) {
   const { id } = await params;
@@ -35,7 +23,8 @@ export default async function TournamentLayout({ children, params }: Props) {
     notFound();
   }
 
-  const gameName = tournament.games?.name || 'Esports Tournament';
+  const game = tournament.game || tournament.games;
+  const gameName = game?.name || 'Esports Tournament';
   const formatLabel = tournament.format_type.replace(/_/g, ' ');
 
   return (
@@ -52,25 +41,25 @@ export default async function TournamentLayout({ children, params }: Props) {
           </Link>
 
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-3">
-                <h1 className="text-xl md:text-2xl font-bold tracking-tight text-text-primary">
-                  {tournament.title}
-                </h1>
-                <Badge variant={getStatusBadgeVariant(tournament.status)}>
-                  {tournament.status}
-                </Badge>
-              </div>
+            <div className="flex items-center gap-3.5">
+              <GameLogoBadge slug={game?.slug} name={game?.name} genre={game?.genre} size="lg" />
+              <div>
+                <div className="flex items-center gap-3">
+                  <h1 className="text-xl md:text-2xl font-bold tracking-tight text-text-primary">
+                    {tournament.title}
+                  </h1>
+                  <TournamentStatusBadge status={tournament.status} size="md" />
+                </div>
 
-              <div className="flex flex-wrap items-center gap-3 text-xs text-text-muted mt-2">
-                <span className="flex items-center gap-1.5 font-medium text-text-secondary">
-                  <Gamepad2 size={14} className="text-accent" />
-                  {gameName}
-                </span>
-                <span>•</span>
-                <span className="font-mono uppercase tracking-wider text-[11px]">
-                  {formatLabel}
-                </span>
+                <div className="flex flex-wrap items-center gap-3 text-xs text-text-muted mt-1.5">
+                  <span className="font-medium text-text-secondary">
+                    {gameName}
+                  </span>
+                  <span>•</span>
+                  <span className="font-mono uppercase tracking-wider text-[11px]">
+                    {formatLabel}
+                  </span>
+                </div>
               </div>
             </div>
 

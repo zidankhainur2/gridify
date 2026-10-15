@@ -57,17 +57,17 @@ func TestCalculateRoundRobinStandings(t *testing.T) {
 	}
 
 	// Rank 1: Team A (1W, 1D, 0L -> 4 pts)
-	if rows[0].Participant.ID != pA.ID || rows[0].Points != 4 || rows[0].Rank != 1 {
-		t.Errorf("Rank 1 should be Team A with 4 pts, got %s with %d pts", rows[0].Participant.Name, rows[0].Points)
+	if rows[0].Participant.ID != pA.ID || rows[0].ParticipantID != pA.ID || rows[0].ParticipantName != "Team A" || rows[0].Points != 4 || rows[0].Rank != 1 {
+		t.Errorf("Rank 1 should be Team A with 4 pts, got %s (ID: %s) with %d pts", rows[0].ParticipantName, rows[0].ParticipantID, rows[0].Points)
 	}
 
 	// Rank 2: Team B (1W, 0D, 1L -> 3 pts)
-	if rows[1].Participant.ID != pB.ID || rows[1].Points != 3 || rows[1].Rank != 2 {
+	if rows[1].Participant.ID != pB.ID || rows[1].ParticipantID != pB.ID || rows[1].ParticipantName != "Team B" || rows[1].Points != 3 || rows[1].Rank != 2 {
 		t.Errorf("Rank 2 should be Team B with 3 pts, got %s with %d pts", rows[1].Participant.Name, rows[1].Points)
 	}
 
 	// Rank 3: Team C (0W, 1D, 1L -> 1 pt)
-	if rows[2].Participant.ID != pC.ID || rows[2].Points != 1 || rows[2].Rank != 3 {
+	if rows[2].Participant.ID != pC.ID || rows[2].ParticipantID != pC.ID || rows[2].ParticipantName != "Team C" || rows[2].Points != 1 || rows[2].Rank != 3 {
 		t.Errorf("Rank 3 should be Team C with 1 pt, got %s with %d pts", rows[2].Participant.Name, rows[2].Points)
 	}
 }
@@ -107,12 +107,12 @@ func TestCalculateBRLeaderboard(t *testing.T) {
 	}
 
 	// Team 2 should be Rank 1 (16 pts > 12 pts)
-	if leaderboard[0].Participant.ID != p2.ID || leaderboard[0].TotalPoints != 16 {
-		t.Errorf("expected Team 2 Rank 1 with 16 pts, got %s with %d pts", leaderboard[0].Participant.Name, leaderboard[0].TotalPoints)
+	if leaderboard[0].Participant.ID != p2.ID || leaderboard[0].ParticipantID != p2.ID || leaderboard[0].ParticipantName != "Team 2" || leaderboard[0].TotalPoints != 16 {
+		t.Errorf("expected Team 2 Rank 1 with 16 pts, got %s (ID: %s) with %d pts", leaderboard[0].ParticipantName, leaderboard[0].ParticipantID, leaderboard[0].TotalPoints)
 	}
 
 	// Team 1 should be Rank 2 (12 pts, 1 win)
-	if leaderboard[1].Participant.ID != p1.ID || leaderboard[1].Wins != 1 {
+	if leaderboard[1].Participant.ID != p1.ID || leaderboard[1].ParticipantID != p1.ID || leaderboard[1].ParticipantName != "Team 1" || leaderboard[1].Wins != 1 {
 		t.Errorf("expected Team 1 Rank 2 with 1 win, got %s with %d wins", leaderboard[1].Participant.Name, leaderboard[1].Wins)
 	}
 }

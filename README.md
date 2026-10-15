@@ -109,6 +109,34 @@ graph TD
 
 ---
 
+## Menjalankan Lingkungan Pengembangan (Development)
+
+Sistem menyediakan script otomatisasi PowerShell `dev.ps1` untuk menjalankan seluruh dependensi dan service sekaligus:
+
+```powershell
+# Menjalankan seluruh stack layanan (Docker, DB, Backend Go, Frontend Next.js)
+.\dev.ps1
+
+# Menjalankan di jendela terminal terpisah
+.\dev.ps1 -Windowed
+
+# Menjalankan sekaligus mengisi database dengan dummy data
+.\dev.ps1 -Seed
+
+# Menghentikan seluruh proses backend & frontend yang masih aktif
+.\dev.ps1 -Stop
+```
+
+### Kapabilitas Otomatisasi `dev.ps1`:
+1. **Auto-Start Docker**: Mendeteksi jika Docker daemon belum aktif, menyalakan aplikasi Docker Desktop secara otomatis, dan menunggu hingga Docker Engine siap.
+2. **PostgreSQL Ready Check**: Menjalankan kontainer `gridify-postgres` via Docker Compose dan menunggu verifikasi `pg_isready`.
+3. **Auto Database Migration**: Mengeksekusi migrasi skema database (`go run ./cmd/migrate up`) sebelum server API dijalankan.
+4. **Auto Dependency Install**: Memeriksa direktori `node_modules` di frontend dan menjalankan `npm install` bila belum terpasang.
+5. **Port Conflict Cleanup**: Secara otomatis mendeteksi dan menghentikan proses lama/gantung yang memblokir port `8080` atau `3000`.
+6. **Graceful Multi-Process Logs**: Menggabungkan log Backend (Cyan) dan Frontend (Magenta) ke dalam satu konsol secara real-time dengan penanganan `Ctrl+C` yang bersih tanpa meninggalkan proses orphan di background.
+
+---
+
 ## Spesifikasi Data dan Kontrak API
 
 Seluruh komunikasi antara lapisan presentasi dan lapisan mesin logika diatur melalui kontrak OpenAPI 3.0 yang terdokumentasi pada direktori kontrak sistem. Format pertukaran data menggunakan struktur respons terenkapsulasi standar untuk memastikan konsistensi penanganan data dan kode kesalahan.

@@ -12,7 +12,8 @@ import {
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { Tournament, Participant, Match } from '@/types/api';
-import { Badge } from '@/components/ui/badge';
+import { Badge, TournamentStatusBadge } from '@/components/ui/badge';
+import { GameLogoBadge } from '@/components/ui/game-logo';
 import ShareButton from '@/features/tournaments/components/share-button';
 import { DeleteTournamentButton } from '@/features/tournaments/components/delete-tournament-button';
 
@@ -23,19 +24,6 @@ const formatDate = (dateString: string) => {
     year: 'numeric',
   });
 };
-
-function getStatusBadgeVariant(status: string) {
-  switch (status) {
-    case 'ONGOING':
-      return 'success';
-    case 'COMPLETED':
-      return 'default';
-    case 'DRAFT':
-      return 'warning';
-    default:
-      return 'default';
-  }
-}
 
 export default async function TournamentOverviewPage({
   params,
@@ -71,6 +59,8 @@ export default async function TournamentOverviewPage({
   const participantMap = new Map<string, string>();
   participants.forEach((p) => participantMap.set(p.id, p.name));
 
+  const game = tournament.game || tournament.games;
+
   return (
     <div className="space-y-6 animate-in fade-in duration-200 pb-10">
       {/* Overview Hero Banner */}
@@ -78,13 +68,11 @@ export default async function TournamentOverviewPage({
         <div className="flex flex-col md:flex-row md:items-start justify-between gap-6">
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-surface-elevated text-text-secondary text-xs font-medium border border-border-default">
-                <Gamepad2 size={14} className="text-accent" />
-                {tournament.games?.name || 'Esports Game'}
+              <span className="inline-flex items-center gap-2 px-2.5 py-1 rounded-md bg-surface-elevated text-text-secondary text-xs font-medium border border-border-default">
+                <GameLogoBadge slug={game?.slug} name={game?.name} genre={game?.genre} size="xs" />
+                <span className="font-semibold text-text-primary">{game?.name || 'Esports Game'}</span>
               </span>
-              <Badge variant={getStatusBadgeVariant(tournament.status)}>
-                {tournament.status}
-              </Badge>
+              <TournamentStatusBadge status={tournament.status} />
             </div>
 
             <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-text-primary">

@@ -20,7 +20,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
         {label && (
           <label
             htmlFor={selectId}
-            className="block text-xs font-medium text-zinc-300 select-none"
+            className="block text-xs font-medium text-text-secondary select-none"
           >
             {label}
           </label>
@@ -31,10 +31,10 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
             ref={ref}
             className={twMerge(
               clsx(
-                'flex h-9 w-full appearance-none rounded-lg border bg-[#121215] px-3 py-1.5 pr-8 text-sm text-zinc-100 shadow-sm transition-colors',
-                'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-400 focus-visible:border-zinc-400',
+                'flex h-9 w-full appearance-none rounded-lg border bg-surface-raised px-3 py-1.5 pr-8 text-sm text-text-primary shadow-xs transition-colors',
+                'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent focus-visible:border-accent',
                 'disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer',
-                error ? 'border-rose-500/80' : 'border-[#27272A] hover:border-zinc-700',
+                error ? 'border-danger' : 'border-border-default hover:border-border-strong',
                 className
               )
             )}
@@ -42,13 +42,13 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
           >
             {options
               ? options.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
+                  <option key={opt.value} value={opt.value} className="bg-surface-raised text-text-primary">
                     {opt.label}
                   </option>
                 ))
               : children}
           </select>
-          <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2.5 text-zinc-400">
+          <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2.5 text-text-muted">
             <svg
               className="h-4 w-4"
               xmlns="http://www.w3.org/2000/svg"
@@ -61,9 +61,9 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
           </div>
         </div>
         {error ? (
-          <p className="text-xs text-rose-400 font-medium">{error}</p>
+          <p className="text-xs text-danger font-medium">{error}</p>
         ) : helperText ? (
-          <p className="text-xs text-zinc-500">{helperText}</p>
+          <p className="text-xs text-text-muted">{helperText}</p>
         ) : null}
       </div>
     );
@@ -88,7 +88,7 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
         {label && (
           <label
             htmlFor={textareaId}
-            className="block text-xs font-medium text-zinc-300 select-none"
+            className="block text-xs font-medium text-text-secondary select-none"
           >
             {label}
           </label>
@@ -98,19 +98,19 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
           ref={ref}
           className={twMerge(
             clsx(
-              'flex min-h-[80px] w-full rounded-lg border bg-[#121215] px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 shadow-sm transition-colors',
-              'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-400 focus-visible:border-zinc-400',
+              'flex min-h-[80px] w-full rounded-lg border bg-surface-raised px-3 py-2 text-sm text-text-primary placeholder:text-text-muted shadow-xs transition-colors',
+              'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent focus-visible:border-accent',
               'disabled:cursor-not-allowed disabled:opacity-50 resize-y',
-              error ? 'border-rose-500/80 focus-visible:ring-rose-500' : 'border-[#27272A] hover:border-zinc-700',
+              error ? 'border-danger focus-visible:ring-danger' : 'border-border-default hover:border-border-strong',
               className
             )
           )}
           {...props}
         />
         {error ? (
-          <p className="text-xs text-rose-400 font-medium">{error}</p>
+          <p className="text-xs text-danger font-medium">{error}</p>
         ) : helperText ? (
-          <p className="text-xs text-zinc-500">{helperText}</p>
+          <p className="text-xs text-text-muted">{helperText}</p>
         ) : null}
       </div>
     );

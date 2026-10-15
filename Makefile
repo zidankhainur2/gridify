@@ -1,7 +1,8 @@
-.PHONY: help dev-db migrate-up migrate-down seed run-backend run-frontend test lint
+.PHONY: help dev dev-db migrate-up migrate-down seed run-backend run-frontend test lint
 
 help:
 	@echo Gridify Commands:
+	@echo   make dev           - Run all services (Docker, DB, Backend, Frontend) via dev.ps1
 	@echo   make dev-db        - Start PostgreSQL 17 container via Docker
 	@echo   make migrate-up    - Run database migrations UP
 	@echo   make migrate-down  - Rollback database migrations DOWN
@@ -10,6 +11,9 @@ help:
 	@echo   make run-frontend  - Run Next.js frontend dev server
 	@echo   make test          - Run backend test suite
 	@echo   make lint          - Run Go linter/vet
+
+dev:
+	powershell -ExecutionPolicy Bypass -File ./dev.ps1
 
 dev-db:
 	docker compose up -d postgres

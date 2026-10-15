@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="mlbb-gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FCD34D"/>
+      <stop offset="50%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#B45309"/>
+    </linearGradient>
+    <linearGradient id="mlbb-blue" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="100%" stop-color="#0284C7"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#0C1322"/>
+  <!-- Winged M Shield -->
+  <path d="M12 18 L24 14 L32 20 L40 14 L52 18 L46 44 L32 54 L18 44 Z" fill="url(#mlbb-gold)" opacity="0.9"/>
+  <path d="M16 20 L24 17 L32 22 L40 17 L48 20 L43 42 L32 50 L21 42 Z" fill="#0E1726"/>
+  <!-- Central M Symbol -->
+  <path d="M22 42 L22 24 L28 34 L32 27 L36 34 L42 24 L42 42 L38 42 L38 31 L34 38 L30 38 L26 31 L26 42 Z" fill="url(#mlbb-gold)"/>
+  <!-- Top Star Accent -->
+  <polygon points="32,8 34,13 39,14 35,18 36,23 32,20 28,23 29,18 25,14 30,13" fill="#FDE047"/>
+</svg>

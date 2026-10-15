@@ -17,9 +17,9 @@ export default function AppProviders({
         theme="dark"
         toastOptions={{
           style: {
-            background: '#18181B',
-            borderColor: '#27272A',
-            color: '#F4F4F5',
+            background: '#111620',
+            borderColor: '#2A3447',
+            color: '#F8FAFC',
           },
         }}
       />

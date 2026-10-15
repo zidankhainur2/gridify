@@ -44,21 +44,33 @@ export default function BRScoreModal({
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<BRRowItem[]>([]);
 
+  const gameNum = match.round_number || match.match_number;
+
   useEffect(() => {
-    const existing = (match.scores?.results || []) as any[];
+    // Read from match.br_results (populated by backend Go) or legacy scores.results
+    const existingBR = (match.br_results || []) as any[];
+    const legacyResults = (match.scores?.results || []) as any[];
+    const existing = existingBR.length > 0 ? existingBR : legacyResults;
+
     if (existing.length > 0) {
       const mapped = participants.map((p) => {
-        const found = existing.find((r) => (r.team_id || r.teamId) === p.id);
+        const found = existing.find(
+          (r) => (r.participant_id || r.participant?.id || r.team_id || r.teamId) === p.id
+        );
         if (found) {
+          const rankVal = found.placement_rank ?? found.rank ?? '';
+          const killsVal = found.kills ?? '';
+          const totalVal = found.total_points ?? found.total ?? 0;
           return {
             teamId: p.id,
-            rank: found.rank ?? '',
-            kills: found.kills ?? '',
-            total: found.total ?? 0,
+            rank: rankVal,
+            kills: killsVal,
+            total: totalVal,
           };
         }
         return { teamId: p.id, rank: '' as const, kills: '' as const, total: 0 };
       });
+
       setRows(
         mapped.sort((a, b) => (Number(a.rank) || 99) - (Number(b.rank) || 99))
       );
@@ -115,7 +127,7 @@ export default function BRScoreModal({
       );
 
       toast.success('Hasil Putaran Disimpan!', {
-        description: `Skor Game ${match.match_number} berhasil direkam ke leaderboard.`,
+        description: `Skor Game #${gameNum} berhasil direkam ke leaderboard.`,
       });
 
       router.refresh();
@@ -131,16 +143,18 @@ export default function BRScoreModal({
   const getTeamName = (id: string) =>
     participants.find((p) => p.id === id)?.name || 'Unknown';
 
+  const modalTitle = `Input Hasil Game #${gameNum}${match.map_name ? ` • Map ${match.map_name}` : ''}`;
+
   return (
     <Modal
       isOpen={true}
       onClose={() => !loading && onClose()}
-      title={`Input Hasil Game #${match.match_number}`}
-      description="Masukkan peringkat penempatan (Placement) dan jumlah eliminasi (Kills) untuk masing-masing tim."
+      title={modalTitle}
+      description="Masukkan peringkat penempatan (Placement Rank) dan jumlah eliminasi (Kills) untuk masing-masing tim."
       size="lg"
     >
       <form onSubmit={handleSave} className="space-y-4 pt-2">
-        <div className="max-h-[60vh] overflow-y-auto border border-border-subtle rounded-lg">
+        <div className="max-h-[60vh] overflow-y-auto border border-border-default rounded-lg">
           <table className="w-full text-xs text-left">
             <thead className="bg-surface-elevated text-text-muted font-mono uppercase sticky top-0 z-10 border-b border-border-subtle">
               <tr>
@@ -157,38 +171,27 @@ export default function BRScoreModal({
                     {getTeamName(row.teamId)}
                   </td>
                   <td className="px-2 py-2.5">
-                    <div className="relative">
-                      <input
-                        type="number"
-                        min="1"
-                        value={row.rank}
-                        onChange={(e) =>
-                          handleChange(idx, 'rank', e.target.value)
-                        }
-                        className="w-full bg-surface-base border border-border-default rounded-md px-2 py-1 text-center font-mono text-text-primary focus:border-accent outline-none"
-                        placeholder="-"
-                      />
-                      {Number(row.rank) === 1 && (
-                        <Trophy
-                          size={12}
-                          className="absolute top-2 right-1.5 text-amber-400"
-                        />
-                      )}
-                    </div>
+                    <input
+                      type="number"
+                      min="1"
+                      max={participants.length}
+                      value={row.rank}
+                      onChange={(e) => handleChange(idx, 'rank', e.target.value)}
+                      placeholder="Rank"
+                      className="w-full bg-surface-base border border-border-default rounded px-2 py-1 text-center font-mono font-bold text-text-primary focus:border-accent focus:outline-none"
+                    />
                   </td>
                   <td className="px-2 py-2.5">
                     <input
                       type="number"
                       min="0"
                       value={row.kills}
-                      onChange={(e) =>
-                        handleChange(idx, 'kills', e.target.value)
-                      }
-                      className="w-full bg-surface-base border border-border-default rounded-md px-2 py-1 text-center font-mono text-text-primary focus:border-accent outline-none"
+                      onChange={(e) => handleChange(idx, 'kills', e.target.value)}
                       placeholder="0"
+                      className="w-full bg-surface-base border border-border-default rounded px-2 py-1 text-center font-mono font-bold text-rose-400 focus:border-accent focus:outline-none"
                     />
                   </td>
-                  <td className="px-4 py-2.5 text-center font-bold font-mono text-sm text-accent">
+                  <td className="px-4 py-2.5 text-center font-mono font-bold text-accent">
                     {row.total}
                   </td>
                 </tr>
@@ -197,19 +200,30 @@ export default function BRScoreModal({
           </table>
         </div>
 
-        <div className="flex justify-end gap-2 pt-3 border-t border-border-subtle">
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={onClose}
-            disabled={loading}
-          >
-            Batal
-          </Button>
-          <Button type="submit" variant="primary" isLoading={loading}>
-            <Save size={16} />
-            <span>Simpan Hasil Game</span>
-          </Button>
+        <div className="flex justify-between items-center pt-2">
+          <span className="text-[11px] font-mono text-text-muted">
+            Format: Rank 1 = 10pts, 2 = 6pts, 3 = 5pts... + 1pt per Kill
+          </span>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onClose}
+              disabled={loading}
+            >
+              Batal
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              size="sm"
+              isLoading={loading}
+            >
+              <Save size={14} />
+              Simpan Hasil
+            </Button>
+          </div>
         </div>
       </form>
     </Modal>
